@@ -1,0 +1,59 @@
+// Overall Framework of the Proposed Method
+digraph AlgorithmArchitecture {
+	dpi=300 rankdir=LR size="12,8"
+	node [fontname=Arial fontsize=12 shape=rectangle style=filled]
+	subgraph cluster_input {
+		color=blue fontname="Arial Bold" label="I. Pre-processing (EAFE-M Framework)"
+		raw_img [label="Raw Endoscopic Image
+(I_t, I_s)" fillcolor=lightgray]
+		eafe_m [label="Innovation 4: EAFE-M
+(Artifact Suppression & 
+Mask-guided Enhancement)" fillcolor="#FFDAB9" penwidth=2]
+		mask [label="Binary Mask (M)" fillcolor=white shape=note]
+		enhanced_img [label="Enhanced Image (Ĩ)" fillcolor=white]
+	}
+	subgraph cluster_backbone {
+		color=green fontname="Arial Bold" label="II. Backbone"
+		encoder [label="Innovation 1: EndoSHaTrans
+(Single-head Lightweight 
+Transformer Encoder)" fillcolor="#90EE90" penwidth=2]
+	}
+	subgraph cluster_depth {
+		color=red fontname="Arial Bold" label="III. Depth Branch"
+		ldam [label="Innovation 2: LDAM
+(Two-stage Differential 
+Attention Fusion)" fillcolor="#FFB6C1" penwidth=2]
+		pixel_shuffle [label="PixelShuffle Decoder" fillcolor=white]
+		depth_out [label="Pixel-wise Depth Map (D)" fillcolor=white shape=parallelogram]
+	}
+	subgraph cluster_pose {
+		color=purple fontname="Arial Bold" label="IV. Pose-Intrinsic Branch"
+		msid [label="Innovation 3: EndoMSID
+(Context-aware Joint 
+Decoder)" fillcolor="#E6E6FA" penwidth=2]
+		pose_out [label="6-DoF Pose (T)" fillcolor=white shape=parallelogram]
+		intri_out [label="Camera Intrinsics (K)" fillcolor=white shape=parallelogram]
+	}
+	subgraph cluster_loss {
+		color=darkorange fontname="Arial Bold" label="V. Self-supervised Loss"
+		warping [label="View Synthesis (Warping)" fillcolor=lightyellow]
+		total_loss [label="Joint Loss Function
+(L_repro, L_smooth, L_hard)" fillcolor=orange]
+	}
+	raw_img -> eafe_m
+	eafe_m -> mask
+	eafe_m -> enhanced_img
+	enhanced_img -> encoder
+	encoder -> ldam [label="Features (F1-F5)"]
+	ldam -> pixel_shuffle
+	pixel_shuffle -> depth_out
+	encoder -> msid [label="High-order Feat."]
+	msid -> pose_out
+	msid -> intri_out
+	depth_out -> warping
+	pose_out -> warping
+	intri_out -> warping
+	raw_img -> warping [label="Raw Target Image" style=dashed]
+	warping -> total_loss
+	mask -> total_loss [label=Masking color=red style=dashed]
+}

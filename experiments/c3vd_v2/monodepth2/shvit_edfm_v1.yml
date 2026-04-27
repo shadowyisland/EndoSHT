@@ -1,0 +1,64 @@
+## 实验描述：集成 SHViT 编码器 + EDFM(VCA+Gating) 融合模块 + MSCD 解码器
+## 创新点包装：基于轻量化单头Transformer与差异化特征引导的内窥镜深度估计研究
+## 训练数据集：c3vd_v2
+
+## trainer
+log_dir: results_shvit_edfm_v1  # 实验结果保存路径
+run_train: true
+num_epochs: 30                  # 毕业论文建议跑 20-30 epoch 以获得平滑的收敛曲线，设置更大值配合早停
+batch_size: 32                  # 建议范围 4-16，视显存而定
+save_checkpoint_freq: 1
+log_freq: 100
+run_val: true
+run_test: true
+# 排除多余的 scale 指标，只关注核心 3 个尺度
+# metric_str_exclude: ["loss/photometric_3", "da/a2", "da/a3"]
+
+## 早停策略配置
+early_stopping_patience: 5     # 允许验证损失不改善的epoch数
+early_stopping_min_delta: 0.0001  # 最小改善阈值
+early_stopping_monitor: 'val_loss'  # 监控的指标（支持：val_loss或其他验证指标）
+early_stopping_restore_best: true  # 早停时是否恢复最佳模型权重
+
+## checkpoints
+weights_init: scratch           # 骨干网络较新，建议先随机初始化跑通
+# mypretrain: "path/to/shvit_imagenet.pth" # 如果后续找到预训练权重可添加
+
+## optimizer
+# 针对 ViT 架构，AdamW 通常比 Adam 更稳定
+lr: [0.00001, 0.00001, 20, 0.00008, 0.00001, 20]
+weight_decay: 0.03              # ViT 类模型需要稍大的权重衰减防止过拟合
+
+## 创新点模块开关 (对应后续代码缝合逻辑)
+use_edfm: true            # 创新点 ②：差异化特征融合模块 (VCA + Gating)
+use_mscd: true            # 创新点 ③：多尺度上下文增强解码器 (基于 OverLoCK)
+# use_edge_loss: true       # 创新点 ⑤：边缘感知平滑损失 (代码已默认集成)
+
+## loss 配置
+disable_matcher: true      # 初期建议关闭 matcher，专注于几何一致性学习
+disparity_smoothness: 0.01 # 边缘感知损失权重
+ratio_consistency: false   # 暂时关闭，保持实验变量单一
+
+## dataloader
+data_path: /media/mems509/9b308a11-7150-4494-8f42-71df9385ff43/home/mems509/wjy/MonoLoT-main/data/c3vd_v2/imgs
+split: c3vd_v2
+dataset: C3VDDataset
+png: true
+height: 256
+width: 320
+load_depth: true
+
+## model 核心配置
+model_name: EndoSHViT_EDFM_v1
+model: EstimateDepth
+model_str: shvit-tiny     # 必须与 model.py 中的判断逻辑对应
+# model_str: monodepth2
+scheduler_str: step        # 学习率调度策略
+
+drop_path: 0.35  # 增加DropPath，这是Transformer的主要正则化手段num_layers: 18            # 兼容性参数
+scales: [0, 1, 2]         # SHViT 输出 1/4, 1/8, 1/16 三个尺度
+min_depth: 0.1
+max_depth: 100.0
+frame_ids: [0, -1, 1]
+min_gt_depth: 0.001
+max_gt_depth: 1.0

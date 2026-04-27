@@ -1,0 +1,44 @@
+# 忽略训练结果文件夹
+results_shvit_edfm_v2/
+
+# 忽略预训练模型文件夹
+pretrain/
+
+# 忽略 playground 文件夹
+playground/
+
+# 忽略重建什么什么文件夹
+reconstructions/
+
+# 编辑器
+.idea/
+assets/
+splits/
+shvit_s1.pth
+SwiftFormer_S_ckpt.pth
+
+# 图片
+visual_depth_maps/
+
+## 忽略 node_modules 文件夹（前端常用）
+node_modules/
+
+# 忽略 dist 打包文件夹
+dist/
+
+# 忽略 build 文件夹
+build/
+
+# 忽略 .idea 编辑器配置
+.idea/
+
+# 忽略 VSCode 配置
+.vscode/
+
+# 忽略日志文件
+*.log
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class

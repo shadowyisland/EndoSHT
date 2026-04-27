@@ -1,0 +1,62 @@
+## 实验描述：集成 Mamba 编码器 + WEA 边缘感知模块 + 自适应内参估计
+## 训练数据集：c3vd_v2
+
+## trainer
+log_dir: results_mamba_wea_v1  # 建议更改路径以区分旧实验
+run_train: true
+num_epochs: 3
+batch_size: 2  # 如果显存不足，可以降到 8 或 10
+save_checkpoint_freq: 1
+log_freq: 100
+run_val: true
+run_test: true
+# 建议先保留核心 loss 查看训练趋势
+metric_str_exclude: ["loss/photometric_1", "loss/photometric_2", "loss/photometric_3", "da/a2", "da/a3"]
+
+## checkpoints
+weights_init: scratch # 因为更换了 Mamba 架构，建议先从 scratch (随机初始化) 开始训练
+# 如果你已经有了 Mamba 的预训练权重，再开启下面这行
+# mypretrain: "path/to/your/mamba_pretrain.pth"
+
+## optimizer
+# 学习率建议：对于新架构，可以先尝试你之前的配置
+lr: [0.0001, 0.00001, 26, 0.0001, 0.00001, 26]
+
+## 创新点开关 (必须与 model.py 中的 cfgs.get 一一对应)
+predict_intrinsics: true  # 启用创新点 ③：自适应内参
+use_wea: true             # 启用创新点 ②：肠壁折皱边缘感知模块
+# 注意：创新点 ④ (边缘感知损失) 在代码中已默认替换原有平滑损失
+
+## loss 配置
+disable_matcher: true      # 建议第一阶段先关掉 matcher，验证纯粹的自监督几何学习效果
+disparity_smoothness: 0.001 # 对应重构后的“边缘感知平滑损失”权重
+ratio_consistency: false   # 先关闭旧的 idea，让实验对比更清晰
+
+## dataloader
+data_path: /media/mems509/9b308a11-7150-4494-8f42-71df9385ff43/home/mems509/wjy/MonoLoT-main/data/c3vd_v2/imgs
+split: c3vd_v2
+dataset: C3VDDataset
+png: true
+height: 256
+width: 320
+load_depth: true
+
+## model 核心配置
+model_name: Mamba_WEA_Intrinsics_C3VD_v2
+model: EstimateDepth
+schedule_str: step
+
+
+# 这里填写我们在 model.py 中新定义的分支名
+# model_str: mamba-mono
+# model_str: monodepth2
+model_str: mamba-mono
+weight_decay: 0.01
+drop_path: 0.2
+num_layers: 18
+scales: [0, 1, 2, 3]
+min_depth: 0.1
+max_depth: 100.0
+frame_ids: [0, -1, 1]
+min_gt_depth: 0.001
+max_gt_depth: 1.0
