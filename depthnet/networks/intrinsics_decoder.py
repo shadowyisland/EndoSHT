@@ -29,7 +29,10 @@ class IntrinsicsHead(nn.Module):
         batch_size = bottleneck.shape[0]
         intrinsics_mat = torch.eye(4).unsqueeze(0).to(curr_device)
         intrinsics_mat = intrinsics_mat.repeat(batch_size, 1, 1)
-        bottleneck = self.convs_suqeeze(bottleneck)
+        
+        # 只有当输入通道不是256时才进行squeeze转换
+        if bottleneck.shape[1] != 256:
+            bottleneck = self.convs_suqeeze(bottleneck)
         
         if self.use_contmix:
             bottleneck = self.contmix_block(bottleneck)
