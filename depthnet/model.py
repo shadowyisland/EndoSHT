@@ -59,9 +59,9 @@ class EstimateDepth():
             self.net_pose_encoder = ResnetEncoder(self.num_layers, self.weights_init == "pretrained",
                                                   num_input_images=self.num_pose_frames)
             self.net_pose_decoder = PoseDecoder(self.net_pose_encoder.num_ch_enc, num_input_features=1,
-                                                num_frames_to_predict_for=2)
+                                                num_frames_to_predict_for=2, use_contmix=True)
 
-            self.net_depth_intrinsics = IntrinsicsHead(self.net_pose_encoder.num_ch_enc)
+            self.net_depth_intrinsics = IntrinsicsHead(self.net_pose_encoder.num_ch_enc, use_contmix=True)
         elif self.model_str == "shvit":
             # 1. 初始化编码器
             self.net_depth_encoder = SHViTEncoder(
@@ -100,9 +100,10 @@ class EstimateDepth():
             self.net_pose_decoder = PoseDecoder(
                 self.net_pose_encoder.num_ch_enc,
                 num_input_features=1,
-                num_frames_to_predict_for=2
+                num_frames_to_predict_for=2,
+                use_contmix=True
             )
-            self.net_depth_intrinsics = IntrinsicsHead(self.net_pose_encoder.num_ch_enc)
+            self.net_depth_intrinsics = IntrinsicsHead(self.net_pose_encoder.num_ch_enc, use_contmix=True)
         elif self.model_str in ["lite-mono", "lite-mono-small", "lite-mono-tiny", "lite-mono-8m"]:
             self.drop_path = cfgs.get('drop_path', 0.2)
             self.net_depth_encoder = LiteMono(model=self.model_str, drop_path_rate=self.drop_path, width=self.width,

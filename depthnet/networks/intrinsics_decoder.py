@@ -2,13 +2,20 @@ import torch
 import torch.nn as nn
 from .LAE import LAE
 from .modifyppm import ModifyPPM
+from .contmix import ContMixBlock
 
 class IntrinsicsHead(nn.Module):
-    def __init__(self, num_ch_enc):
+    def __init__(self, num_ch_enc, use_contmix=True):
         super(IntrinsicsHead, self).__init__()
 
         self.num_ch_enc = num_ch_enc
+        self.use_contmix = use_contmix
+        
         self.convs_suqeeze = nn.Conv2d(self.num_ch_enc[-1], 256, 1)
+        
+        if self.use_contmix:
+            self.contmix_block = ContMixBlock(dim=256, kernel_size=7, smk_size=5, num_heads=2, mlp_ratio=4)
+            
         self.focal_length_conv = nn.Conv2d(256, 2, 1, bias=False)
         self.offsets_conv = nn.Conv2d(256, 2, 1, bias=False)
         self.global_pooling = nn.AdaptiveAvgPool2d(1)
@@ -22,6 +29,11 @@ class IntrinsicsHead(nn.Module):
         batch_size = bottleneck.shape[0]
         intrinsics_mat = torch.eye(4).unsqueeze(0).to(curr_device)
         intrinsics_mat = intrinsics_mat.repeat(batch_size, 1, 1)
+        bottleneck = self.convs_suqeeze(bottleneck)
+        
+        if self.use_contmix:
+            bottleneck = self.contmix_block(bottleneck)
+            
         bottleneck = self.ppm(bottleneck)
         bottleneck = self.lae(bottleneck)
 
