@@ -13,6 +13,7 @@ import torch.nn as nn
 from collections import OrderedDict
 from .layers import *
 from .FMBConv import FMBPlusPlus
+from .LDAM import LDAM
 
 
 class DepthDecoder(nn.Module):
@@ -29,11 +30,23 @@ class DepthDecoder(nn.Module):
 
         # decoder
         self.convs = OrderedDict()
+        self.ldam_modules = nn.ModuleList()
+        
         for i in range(4, -1, -1):
             # upconv_0
             num_ch_in = self.num_ch_enc[-1] if i == 4 else self.num_ch_dec[i + 1]
             num_ch_out = self.num_ch_dec[i]
             self.convs[("upconv", i, 0)] = ConvBlock(num_ch_in, num_ch_out)
+
+            # 为跳跃连接添加 LDAM 模块
+            if self.use_skips and i > 0:
+                self.ldam_modules.append(
+                    LDAM(
+                        enc_dim=self.num_ch_enc[i - 1],
+                        dec_dim=num_ch_out,
+                        out_dim=self.num_ch_enc[i - 1]
+                    )
+                )
 
             # upconv_1
             num_ch_in = self.num_ch_dec[i]
@@ -53,11 +66,16 @@ class DepthDecoder(nn.Module):
 
         # decoder
         x = input_features[-1]
+        ldam_idx = 0
         for i in range(4, -1, -1):
             x = self.convs[("upconv", i, 0)](x)
-            x = [upsample(x, mode=self.upsample_mode)]
+            upsampled_x = upsample(x, mode=self.upsample_mode)
+            x = [upsampled_x]
             if self.use_skips and i > 0:
-                x += [input_features[i - 1]]
+                # 使用 LDAM 模块融合编码器和解码器特征
+                fused_feat = self.ldam_modules[ldam_idx](input_features[i - 1], upsampled_x)
+                x += [fused_feat]
+                ldam_idx += 1
             x = torch.cat(x, 1)
             x = self.convs[("upconv", i, 1)](x)
             if i in self.scales:
