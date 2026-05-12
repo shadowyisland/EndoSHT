@@ -3,7 +3,6 @@ from .lr_scheduler import ChainedScheduler
 import os
 from .networks.layers import *
 import random
-from .networks.pose_decoder import PoseDecoder
 from .networks.resnet_encoder import ResnetEncoder
 from .networks.depth_decoder import DepthDecoder
 #from .networks.cednet import CEDNet
@@ -12,9 +11,12 @@ from .networks.swiftformer import SwiftFormer_S
 #from .networks.depth_encoder import LiteMono
 #from .networks.depth_decoder_litemono import DepthDecoderV2
 #from .networks.pose_decode_litemono import PoseDecoderV2
-from .networks.intrinsics_decoder import IntrinsicsHead
+# from .networks.pose_decoder import PoseDecoder
+# from .networks.intrinsics_decoder import IntrinsicsHead
 
 from .networks.shvit import SHViTEncoder
+from .networks.T_A import Trim, Aug
+from .networks.pose_intrinsic_decoder import IntrinsicsHead, PoseDecoder
 
 EPS = 1e-7
 
@@ -160,6 +162,10 @@ class EstimateDepth():
         self.ratio_consistency_scales_normalization = cfgs.get('ratio_consistency_scales_normalization', False)
         self.weight_ratio_consistency_crop = cfgs.get('weight_ratio_consistency_crop', 1.0)
         self.align_crop_position = cfgs.get('align_crop_position', False)
+
+        # mask consistency
+        self.mask_consistency = cfgs.get('mask_consistency', False)
+        self.mask_ratio = cfgs.get('mask_ratio', 0.75)
 
         # geometry loss
         self.geometry_loss = cfgs.get('geometry_loss', False)
@@ -495,6 +501,30 @@ class EstimateDepth():
                 outputs[("shuffle_disp", scale)] = self.layer_crop_shuffle(shuffle_outputs[("disp", scale)],
                                                                            crop_info // 2 ** scale)
 
+        if self.mask_consistency:
+            img = inputs["color_aug", 0, 0]
+            # patchify
+            x = Trim.patchify(img)
+            # masking
+            x_masked, mask, ids_restore = Trim.random_masking(x, self.mask_ratio)
+            
+            # create a blank sequence for reconstruction
+            N, L, D = x.shape
+            x_recon = torch.zeros(N, L, D).to(self.device)
+            # fill in masked parts with zeros (or a learnable mask token if we had one)
+            # for now, we just reconstruct the image with masked parts as 0
+            len_keep = x_masked.shape[1]
+            x_recon[:, :len_keep, :] = x_masked
+            
+            # unshuffle to get the image back with holes
+            x_recon = torch.gather(x_recon, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, D))
+            inputs["mask_color_aug", 0, 0] = Trim.unpatchify(x_recon, h=self.height // 32, w=self.width // 32)
+            
+            mask_features = self.net_depth_encoder(inputs["mask_color_aug", 0, 0])
+            mask_outputs = self.net_depth_decoder(mask_features)
+            for scale in self.scales:
+                outputs[("mask_disp", scale)] = mask_outputs[("disp", scale)]
+
         self.generate_images_pred(inputs, outputs)
         losses = self.compute_losses(inputs, outputs)
 
@@ -713,6 +743,26 @@ class EstimateDepth():
                     inputs[("color_local", frame_id, source_scale)],
                     pix_coords, padding_mode="border", align_corners=True)
 
+        if self.mask_consistency:
+            for scale in [0]:
+                source_scale = 0
+                disp = outputs[("mask_disp", scale)]
+                disp = F.interpolate(disp, [self.height, self.width], mode="bilinear", align_corners=False)
+                _, depth = disp_to_depth(disp, self.min_depth, self.max_depth)
+                for _, frame_id in enumerate(self.frame_ids[1:]):
+                    T = outputs[("cam_T_cam", 0, frame_id)]
+                    _backproject_depth = getattr(self, "backproject_depth_{}".format(source_scale))
+
+                    cam_points = _backproject_depth(
+                        depth, outputs[('inv_K', 0)])
+                    _project_3d = getattr(self, "project_3d_{}".format(source_scale))
+                    pix_coords = _project_3d(
+                        cam_points, outputs[('K', 0)], T)
+                    outputs[("color_mask", frame_id, scale)] = F.grid_sample(
+                        inputs[("color", frame_id, source_scale)].clone(),
+                        pix_coords,
+                        padding_mode="border", align_corners=True)
+
     def compute_losses_local(self, inputs, outputs):
         """Compute the reprojection and smoothness losses for a minibatch
         """
@@ -823,6 +873,55 @@ class EstimateDepth():
             # true means corretly match, false means not move
             outputs["identity_selection/{}".format(scale)] = (
                     idxs > identity_reprojection_loss.shape[1] - 1).float()
+
+            loss += to_optimise.mean()
+
+            mean_disp = disp.mean(2, True).mean(3, True)
+            norm_disp = disp / (mean_disp + 1e-7)
+            smooth_loss = get_smooth_loss(norm_disp, color)
+
+            loss += self.disparity_smoothness * smooth_loss / (2 ** scale)
+            total_loss += loss
+
+        return total_loss
+
+    def compute_losses_mask(self, inputs, outputs):
+        """Compute the reprojection and smoothness losses for a masked branch
+        """
+        total_loss = 0
+
+        for scale in [0]:
+            loss = 0
+            reprojection_losses = []
+
+            source_scale = 0
+
+            disp = outputs[("mask_disp", scale)]
+            color = inputs[("color", 0, scale)]
+            target = inputs[("color", 0, source_scale)]
+
+            for frame_id in self.frame_ids[1:]:
+                pred = outputs[("color_mask", frame_id, scale)]
+                reprojection_losses.append(self.compute_reprojection_loss(pred, target))
+
+            reprojection_losses = torch.cat(reprojection_losses, 1)
+
+            identity_reprojection_losses = []
+            for frame_id in self.frame_ids[1:]:
+                pred = inputs[("color", frame_id, source_scale)]
+                identity_reprojection_losses.append(
+                    self.compute_reprojection_loss(pred, target))
+
+            identity_reprojection_losses = torch.cat(identity_reprojection_losses, 1)
+
+            identity_reprojection_loss = identity_reprojection_losses
+            reprojection_loss = reprojection_losses
+
+            identity_reprojection_loss += torch.randn(
+                identity_reprojection_loss.shape, device=self.device) * 0.00001
+
+            combined = torch.cat((identity_reprojection_loss, reprojection_loss), dim=1)
+            to_optimise, idxs = torch.min(combined, dim=1)
 
             loss += to_optimise.mean()
 
@@ -963,9 +1062,13 @@ class EstimateDepth():
 
         total_loss1 += self.compute_losses_local(inputs, outputs) * 0.1
         losses["loss/photometric_local{}"] = self.compute_losses_local(inputs, outputs)
-        """
 
-        total_loss1 += self.compute_losses_reshuffle(inputs, outputs)
+        if self.mask_consistency:
+            mask_loss = self.compute_losses_mask(inputs, outputs)
+            total_loss1 += mask_loss
+            losses["loss/photometric_mask"] = mask_loss
+
+        """
         losses["loss/photometric_reshuffle{}"] = self.compute_losses_reshuffle(inputs, outputs)
         """
 

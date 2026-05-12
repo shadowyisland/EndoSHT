@@ -59,3 +59,5 @@ max_depth: 100.0
 frame_ids: [0,-1,1]
 min_gt_depth: 0.001
 max_gt_depth: 1.0
+mask_consistency: True  # 开启掩码一致性训练
+mask_ratio: 0.75        # 设置掩码比例 (0.75 表示遮住 75% 的区域)

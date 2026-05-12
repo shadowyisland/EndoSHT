@@ -1,5 +1,102 @@
 # 索引: MonoLoT
 
+## 文件: `documentizer_py.py`
+
+```py
+import os
+import argparse
+
+def collect_code_to_md(root_dir, output_file):
+    """
+    遍历指定目录下的所有文件，并将 .go 和 .yaml 文件的内容
+    按目录结构写入一个 Markdown 文件。
+
+    :param root_dir: 要遍历的根目录。
+    :param output_file: 输出的 Markdown 文件名。
+    """
+    # 获取绝对路径，以便 relpath 正常工作
+    root_dir = os.path.abspath(root_dir)
+
+    try:
+        with open(output_file, 'w', encoding='utf-8') as md_file:
+            # 1. 将根目录的名称作为一级标题
+            md_file.write(f"# 索引: {os.path.basename(root_dir)}\n\n")
+
+            # 2. 遍历整个目录树
+            for dirpath, _, filenames in os.walk(root_dir):
+                # 筛选出当前目录下的 .go 和 .yaml 文件
+                # target_files = sorted([f for f in filenames if f.endswith('.py') or f.endswith('.yaml')])
+                target_files = sorted([f for f in filenames if f.endswith('.py')])
+                # 如果当前目录中没有目标文件，则跳过
+                if not target_files:
+                    continue
+
+                # 3. 根据目录深度生成 Markdown 标题
+                relative_dir_path = os.path.relpath(dirpath, root_dir)
+
+                # 如果不是根目录本身，才创建目录标题
+                if relative_dir_path != ".":
+                    # 计算深度，根目录的下一级为 H2
+                    depth = relative_dir_path.count(os.sep) + 2
+                    heading = '#' * depth
+                    md_file.write(f"{heading} 目录: `{relative_dir_path}`\n\n")
+
+                # 4. 遍历并写入每个文件的内容
+                for filename in target_files:
+                    file_path = os.path.join(dirpath, filename)
+
+                    # 确定文件标题的级别，比其所在目录的标题深一级
+                    if relative_dir_path == ".":
+                        file_heading_level = 2  # 根目录下的文件使用 H2
+                    else:
+                        file_heading_level = relative_dir_path.count(os.sep) + 3
+
+                    file_heading = '#' * file_heading_level
+                    md_file.write(f"{file_heading} 文件: `{filename}`\n\n")
+
+                    # 根据文件扩展名确定代码块的语言
+                    lang = ''
+                    if filename.endswith('.py'):
+                        lang = 'py'
+                    elif filename.endswith('.yaml'):
+                        lang = 'yaml'
+
+                    md_file.write(f"```{lang}\n")
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as code_file:
+                            md_file.write(code_file.read())
+                    except Exception as e:
+                        md_file.write(f"Error reading file: {e}")
+                    md_file.write("\n```\n\n")
+
+        print(f"成功将代码按目录结构写入到 '{output_file}' 文件中。")
+
+    except IOError as e:
+        print(f"写入文件时出错: {e}")
+    except Exception as e:
+        print(f"发生未知错误: {e}")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="将一个目录下的所有 .py 和 .yaml 文件的代码按目录结构收集到一个 Markdown 文件中。",
+        epilog="例如: python collect_code_hierarchical.py my_project_code.md -d ./my_project"
+    )
+
+    parser.add_argument(
+        "output_filename",
+        help="要创建的 Markdown 文件的名称 (例如: 'output.md')"
+    )
+
+    parser.add_argument(
+        "-d", "--directory",
+        default=".",
+        help="要遍历的根目录 (默认为当前目录)"
+    )
+
+    args = parser.parse_args()
+    collect_code_to_md(args.directory, args.output_filename)
+```
+
 ## 文件: `eval1.py`
 
 ```py
@@ -1527,6 +1624,245 @@ im = axes.imshow(pred_depth - gt_depth, cmap="seismic_r", vmin=-1, vmax=1)
 plt.colorbar(im, ax=axes, aspect=12, drawedges=False, ticks=[-1, 0, 1])
 ```
 
+## 文件: `eval_new.py`
+
+```py
+import os
+
+os.chdir("/media/mems509/9b308a11-7150-4494-8f42-71df9385ff43/home/mems509/hz/MonoLoT-main")
+from depthnet.utils import *
+from depthnet.model import EstimateDepth
+
+from pathlib import Path
+import os
+import torch
+from torch.utils.data.dataloader import default_collate
+import collections
+
+import cv2
+import numpy as np
+from tqdm.auto import tqdm
+
+import torch
+from torch.utils.data import DataLoader
+
+from PIL import Image
+import cv2
+
+from depthnet.networks.layers import disp_to_depth
+from depthnet.utils import readlines
+import depthnet.datasets as datasets
+import depthnet.networks as networks
+from depthnet.datasets import C3VDDataset
+
+# path of model
+# model_name = "RCC_matching_cropalign_depthnet_c3vd_v2_monodepth2_rep0"
+# model_name = "c3vd_v2/ablation/supervised_depthnet_c3vd_v2_monovit_rep2"
+# model_name = "RC_baseline_depthnet_c3vd_v2_monodepth2"
+model_name = "RCC_matching_cropalign_depthnet_c3vd_v2_monodepth2"
+device = torch.device("cuda")
+gpu_id = 0
+"""
+if gpu_id is not None:
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+"""
+if torch.cuda.is_available():
+    torch.backends.cudnn.enabled = True
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
+cfgs = load_yaml(
+    "/media/mems509/9b308a11-7150-4494-8f42-71df9385ff43/home/mems509/hz/MonoLoT-main/results/RCC_matching_cropalign_depthnet_c3vd_v2_monodepth2_rep0/models/configs.yml")
+cfgs.update({'device': device, "not_load_nets": ["net_pose_encoder", "net_pose_decoder", "net_depth_intrinsics"]})
+
+save_dir = "./visual_depth_maps"
+os.makedirs(save_dir, exist_ok=True)
+
+
+def getDepthNet():
+    # cp_path = Path('results') / model_name / "models" / "weights_18"
+    cp_path = Path('newresults5') / model_name / "models" / "weights_23"
+    # cp_path = Path('results') / model_name / "models" / "weights_last"
+
+    model = globals().get(cfgs.get('model'))(cfgs)
+
+    cp = {}
+    for network_name in model.network_names:
+        cp[network_name] = torch.load(cp_path / "{}.pth".format(network_name), map_location=device)
+
+    model.load_model_state(cp)
+
+    return model
+
+
+model = getDepthNet()
+model.to_device(device)
+
+exps = [cfgs["model_name"]]
+
+modes = ['test_seperately/test_cecum_t4_b_under_review',
+         'test_seperately/test_desc_t4_a_under_review',
+         'test_seperately/test_sigmoid_t3_b_under_review',
+         'test_seperately/test_trans_t4_b_under_review',
+         ]
+
+test_mean_errors = []
+meds = []
+stds = []
+masses = []
+
+for mode in modes:
+
+    gt_depths = []
+    split = cfgs.get('split')
+    fpath = os.path.join("splits", split, "{}_files.txt")
+    data_path = cfgs.get('data_path')
+    filenames = readlines(fpath.format(mode))
+    for line in tqdm(filenames):
+        folder, _, frame_id, _ = line.split()
+        frame_fpath = os.path.join(data_path, folder, "{}_depth.tiff".format(frame_id))
+        gt_depth = cv2.imread(frame_fpath, -1) / (2 ** 16)
+        gt_depths.append(gt_depth)
+
+    print(cfgs["model_name"])
+
+    num_workers = cfgs.get('num_workers', 4)
+    height = cfgs.get('height', 256)
+    width = cfgs.get('width', 320)
+    frame_ids = [0]
+    num_scales = 1
+    dataset = globals().get(cfgs.get('dataset', C3VDDataset))
+    split = cfgs.get('split')
+    fpath = os.path.join("splits", split, "{}_files.txt")
+    filenames = readlines(fpath.format(mode))
+    img_ext = '.png' if cfgs.get('png', False) else '.jpg'
+    matcher_result_load = None  # np.load(cfgs.get('matcher_result', None), allow_pickle=True).all()
+
+    dataset = dataset(data_path, filenames, matcher_result_load,
+                      height, width, frame_ids, num_scales,
+                      is_train=False, img_ext=img_ext)
+    dataloader = DataLoader(dataset, 16, shuffle=False, num_workers=num_workers,
+                            pin_memory=True, drop_last=False)
+
+    model.set_eval()
+
+    pred_disps = []
+
+    print("-> Computing predictions with size {}x{}".format(width, height))
+    def render_depth(disp):
+        disp = (disp - disp.min()) / (disp.max() - disp.min()+1e-8)
+        disp = np.power(disp,0.6)
+
+        disp = (disp*255).astype(np.uint8)
+        disp_color = cv2.applyColorMap(disp, cv2.COLORMAP_TURBO)
+        return disp_color
+
+    with torch.no_grad():
+        for data in tqdm(dataloader):
+            input_color = data[("color", 0, 0)].to(device)
+
+            output = model.net_depth_decoder(model.net_depth_encoder(input_color))
+
+            pred_disp, _ = disp_to_depth(output[("disp", 0)], cfgs["min_depth"], cfgs["max_depth"])
+            pred_disp = pred_disp.cpu()[:, 0].numpy()
+            pred_disps.append(pred_disp)
+
+            pred_disp = pred_disp[0]
+            #pred_disp = cv2.resize(pred_disp, (775, 620))
+
+            vis_pred_depth = render_depth(pred_disp)
+            #raw_line = dataset.filenames[idx]
+            #folder,_,frame_id,_ = raw_line.split()
+            vis_file_name = os.path.join(save_dir, f"_depth.png")
+            cv2.imwrite(vis_file_name, vis_pred_depth)
+            # input_colors.append(data[("color", 0, 0)].numpy())
+    pred_disps = np.concatenate(pred_disps)
+
+    MIN_DEPTH = 0.001
+    MAX_DEPTH = 1.
+    errors = []
+    ratios = []
+
+
+
+
+    def compute_errors(gt, pred):
+        thresh = np.maximum((gt / pred), (pred / gt))
+        a1 = (thresh < 1.25).mean()
+        a2 = (thresh < 1.25 ** 2).mean()
+        a3 = (thresh < 1.25 ** 3).mean()
+
+        rmse = (gt - pred) ** 2
+        rmse = np.sqrt(rmse.mean())
+
+        rmse_log = (np.log(gt) - np.log(pred)) ** 2
+        rmse_log = np.sqrt(rmse_log.mean())
+
+        abs_rel = np.mean(np.abs(gt - pred) / gt)
+
+        sq_rel = np.mean(((gt - pred) ** 2) / gt)
+
+        return abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3
+
+
+    for i in range(pred_disps.shape[0]):
+        gt_depth = gt_depths[i]
+        gt_height, gt_width = gt_depth.shape[:2]
+        #print(gt_height) 1080
+        #print(gt_width)1350
+
+        pred_disp = pred_disps[i]
+
+        pred_disp = cv2.resize(pred_disp, (gt_width, gt_height))
+        pred_depth = 1 / pred_disp
+
+        mask = gt_depth > 0
+
+        pred_depth = pred_depth[mask]
+        gt_depth = gt_depth[mask]
+
+        ratio = np.median(gt_depth) / np.median(pred_depth)
+        ratios.append(ratio)
+        pred_depth *= ratio
+
+        pred_depth[pred_depth < MIN_DEPTH] = MIN_DEPTH
+        pred_depth[pred_depth > MAX_DEPTH] = MAX_DEPTH
+
+        errors.append(compute_errors(gt_depth, pred_depth))
+
+    print("gt_width, gt_height", gt_width, gt_height)
+
+    ratios = np.array(ratios)
+    med = np.median(ratios)
+    print(" Scaling ratios | med: {:0.3f} | std: {:0.3f}".format(med, np.std(ratios / med)))
+
+    mean_errors = np.array(errors).mean(0)
+
+    print("\n  " + ("{:>8} | " * 7).format("abs_rel", "sq_rel", "rmse", "rmse_log", "a1", "a2", "a3"))
+    print(("&{: 8.3}  " * 7).format(*mean_errors.tolist()) + "\\\\")
+    print("\n-> Done!")
+
+    test_mean_errors.append(mean_errors)
+    meds.append(med)
+    stds.append(np.std(ratios / med))
+    masses.append(len(dataset))
+
+print(cfgs["model_name"])
+print("meds: " + ("{:0.3f}  " * len(meds)).format(*meds))
+mean_med = np.sum([mass * med for mass, med in zip(masses, meds)]) / np.sum(masses)
+# print("mean med: " + ("{:0.3f}").format(mean_med))
+mean_std = np.sum([mass * std for mass, std in zip(masses, stds)]) / np.sum(masses)
+# print("mean std: {}".format(mean_std))
+total_mean_errors = np.sum([mass * mean_errors for mass, mean_errors in zip(masses, test_mean_errors)],
+                           axis=0) / np.sum(masses)
+
+print("\n  " + ("{:>8} | " * 9).format("abs_rel", "sq_rel", "rmse", "rmse_log", "a1", "a2", "a3", "med", "std"))
+print(
+    ("&{: 8.3}  " * 7).format(*total_mean_errors.tolist()) + "&{: 8.3}  &{: 8.3}  ".format(mean_med, mean_std) + "\\\\")
+print("\n-> Done!")
+```
+
 ## 文件: `evaltime.py`
 
 ```py
@@ -1842,6 +2178,96 @@ with torch.no_grad():
 avg_time = total_time/100
 print(avg_time*1000)
 
+```
+
+## 文件: `huihua.py`
+
+```py
+from graphviz import Digraph
+
+def draw_architecture():
+    # 创建一个有向图，设置整体方向为从左到右 (LR)
+    dot = Digraph('AlgorithmArchitecture', comment='Overall Framework of the Proposed Method')
+    dot.attr(rankdir='LR', size='12,8', dpi='300')
+    dot.attr('node', fontname='Arial', fontsize='12', shape='rectangle', style='filled')
+
+    # --- 第一部分：输入与 EAFE-M (创新点 4) ---
+    with dot.subgraph(name='cluster_input') as c:
+        c.attr(label='I. Pre-processing (EAFE-M Framework)', color='blue', fontname='Arial Bold')
+        c.node('raw_img', 'Raw Endoscopic Image\n(I_t, I_s)', fillcolor='lightgray')
+        
+        # 创新点 4: EAFE-M
+        c.node('eafe_m', 'Innovation 4: EAFE-M\n(Artifact Suppression & \nMask-guided Enhancement)', 
+               fillcolor='#FFDAB9', penwidth='2') # 橙色背景
+        
+        c.node('mask', 'Binary Mask (M)', fillcolor='white', shape='note')
+        c.node('enhanced_img', 'Enhanced Image (Ĩ)', fillcolor='white')
+
+    # --- 第二部分：共享编码器 (创新点 1) ---
+    with dot.subgraph(name='cluster_backbone') as c:
+        c.attr(label='II. Backbone', color='green', fontname='Arial Bold')
+        # 创新点 1: EndoSHaTrans
+        c.node('encoder', 'Innovation 1: EndoSHaTrans\n(Single-head Lightweight \nTransformer Encoder)', 
+               fillcolor='#90EE90', penwidth='2') # 绿色背景
+
+    # --- 第三部分：深度估计分支 (包含创新点 2) ---
+    with dot.subgraph(name='cluster_depth') as c:
+        c.attr(label='III. Depth Branch', color='red', fontname='Arial Bold')
+        # 创新点 2: LDAM
+        c.node('ldam', 'Innovation 2: LDAM\n(Two-stage Differential \nAttention Fusion)', 
+               fillcolor='#FFB6C1', penwidth='2') # 粉色背景
+        c.node('pixel_shuffle', 'PixelShuffle Decoder', fillcolor='white')
+        c.node('depth_out', 'Pixel-wise Depth Map (D)', fillcolor='white', shape='parallelogram')
+
+    # --- 第四部分：位姿-内参分支 (创新点 3) ---
+    with dot.subgraph(name='cluster_pose') as c:
+        c.attr(label='IV. Pose-Intrinsic Branch', color='purple', fontname='Arial Bold')
+        # 创新点 3: EndoMSID
+        c.node('msid', 'Innovation 3: EndoMSID\n(Context-aware Joint \nDecoder)', 
+               fillcolor='#E6E6FA', penwidth='2') # 紫色背景
+        c.node('pose_out', '6-DoF Pose (T)', fillcolor='white', shape='parallelogram')
+        c.node('intri_out', 'Camera Intrinsics (K)', fillcolor='white', shape='parallelogram')
+
+    # --- 第五部分：联合损失监督 ---
+    with dot.subgraph(name='cluster_loss') as c:
+        c.attr(label='V. Self-supervised Loss', color='darkorange', fontname='Arial Bold')
+        c.node('warping', 'View Synthesis (Warping)', fillcolor='lightyellow')
+        c.node('total_loss', 'Joint Loss Function\n(L_repro, L_smooth, L_hard)', fillcolor='orange')
+
+    # --- 连接所有逻辑线 ---
+    # 输入 -> EAFE-M
+    dot.edge('raw_img', 'eafe_m')
+    dot.edge('eafe_m', 'mask')
+    dot.edge('eafe_m', 'enhanced_img')
+    
+    # 增强图 -> 编码器
+    dot.edge('enhanced_img', 'encoder')
+    
+    # 编码器 -> 深度分支 (经过 LDAM)
+    dot.edge('encoder', 'ldam', label='Features (F1-F5)')
+    dot.edge('ldam', 'pixel_shuffle')
+    dot.edge('pixel_shuffle', 'depth_out')
+    
+    # 编码器 -> 位姿分支
+    dot.edge('encoder', 'msid', label='High-order Feat.')
+    dot.edge('msid', 'pose_out')
+    dot.edge('msid', 'intri_out')
+    
+    # 最终汇总到 Loss
+    dot.edge('depth_out', 'warping')
+    dot.edge('pose_out', 'warping')
+    dot.edge('intri_out', 'warping')
+    dot.edge('raw_img', 'warping', style='dashed', label='Raw Target Image')
+    
+    dot.edge('warping', 'total_loss')
+    dot.edge('mask', 'total_loss', color='red', style='dashed', label='Masking')
+
+    # 保存并查看
+    dot.render('my_algorithm_architecture', format='png', view=True)
+    print("架构图已生成并保存为 my_algorithm_architecture.png")
+
+if __name__ == "__main__":
+    draw_architecture()
 ```
 
 ## 文件: `plot_test.py`
@@ -2183,6 +2609,12 @@ if __name__ == "__main__":
         trainer.train()
     # if run_test:
     #     trainer.test()
+
+```
+
+## 文件: `test.py`
+
+```py
 
 ```
 
@@ -2797,6 +3229,8 @@ from .networks.swiftformer import SwiftFormer_S
 #from .networks.pose_decode_litemono import PoseDecoderV2
 from .networks.intrinsics_decoder import IntrinsicsHead
 
+from .networks.shvit import SHViTEncoder
+
 EPS = 1e-7
 
 
@@ -2840,9 +3274,51 @@ class EstimateDepth():
             self.net_pose_encoder = ResnetEncoder(self.num_layers, self.weights_init == "pretrained",
                                                   num_input_images=self.num_pose_frames)
             self.net_pose_decoder = PoseDecoder(self.net_pose_encoder.num_ch_enc, num_input_features=1,
-                                                num_frames_to_predict_for=2)
+                                                num_frames_to_predict_for=2, use_contmix=True)
 
-            self.net_depth_intrinsics = IntrinsicsHead(self.net_pose_encoder.num_ch_enc)
+            self.net_depth_intrinsics = IntrinsicsHead(self.net_pose_encoder.num_ch_enc, use_contmix=True)
+        elif self.model_str == "shvit":
+            # 1. 初始化编码器
+            self.net_depth_encoder = SHViTEncoder(
+                model_type='shvit_s1',
+                height=self.height,
+                width=self.width
+            )
+
+            # 【显式加载】直接在这里写死你的权重路径
+            # 你可以将这里的字符串替换为你电脑上 shvit_s1.pth 的真实绝对路径
+            shvit_weight_path = "/media/mems509/9b308a11-7150-4494-8f42-71df9385ff43/home/mems509/wjy/MonoLoT-main/shvit_s1.pth"
+            self.net_depth_encoder.load_pretrained(shvit_weight_path)
+
+            # 2. 初始化解码器
+            # 注意：SHViT 只提供 3 个尺度的特征 (1/16, 1/32, 1/64)
+            # 原有的 DepthDecoder 默认适配 ResNet 的 5 个尺度
+            # 建议使用 LiteMono 的 DepthDecoderV2，它能完美处理 3 个尺度的输入
+            # from .networks.depth_decoder_litemono import DepthDecoderV2
+            # self.net_depth_decoder = DepthDecoderV2(
+            #     self.net_depth_encoder.num_ch_enc,
+            #     self.scales
+            # )
+            # 不要使用 DepthDecoderV2，因为它默认只有 3 级
+            from .networks.depth_decoder import DepthDecoder
+            self.net_depth_decoder = DepthDecoder(
+                self.net_depth_encoder.num_ch_enc,
+                self.scales
+            )
+
+            # 3. Pose 部分 (维持原样，通常用 ResNet 比较稳)
+            self.net_pose_encoder = ResnetEncoder(
+                self.num_layers,
+                self.weights_init == "pretrained",
+                num_input_images=self.num_pose_frames
+            )
+            self.net_pose_decoder = PoseDecoder(
+                self.net_pose_encoder.num_ch_enc,
+                num_input_features=1,
+                num_frames_to_predict_for=2,
+                use_contmix=True
+            )
+            self.net_depth_intrinsics = IntrinsicsHead(self.net_pose_encoder.num_ch_enc, use_contmix=True)
         elif self.model_str in ["lite-mono", "lite-mono-small", "lite-mono-tiny", "lite-mono-8m"]:
             self.drop_path = cfgs.get('drop_path', 0.2)
             self.net_depth_encoder = LiteMono(model=self.model_str, drop_path_rate=self.drop_path, width=self.width,
@@ -2880,7 +3356,7 @@ class EstimateDepth():
 
         self.network_names = [k for k in vars(self) if k.startswith('net')]
         # optimizer
-        if self.model_str == 'monovit' or 'lite-mono':
+        if self.model_str in ['monovit', 'lite-mono', 'shvit']:  # 增加 shvit
             self.make_optimizer = lambda optim_dict: torch.optim.AdamW(
                 optim_dict["parameters"], lr=optim_dict["lr"], weight_decay=self.weight_decay)
         elif self.model_str == "monodepth2":
@@ -2966,7 +3442,7 @@ class EstimateDepth():
                 self.scheduler_pose_lr = torch.optim.lr_scheduler.StepLR(self.optimizer_pose, self.num_epochs - 5, 0.1)
                 print("optimiser step")
         else:
-            if self.model_str == 'lite-mono':
+            if self.model_str == 'lite-mono' or self.model_str == 'shvit': # <--- 修改这里，加上 'shvit':
                 self.scheduler_depth_lr = ChainedScheduler(
                     self.optimizer_depth,
                     T_0=int(self.lr[2]), T_mul=1, eta_min=self.lr[1], last_epoch=self.start_epoch - 1,
@@ -3026,7 +3502,56 @@ class EstimateDepth():
         else:
             print("Cannot find optimizer weights so Adam is randomly initialized")
 
+    def load_shvit_weights(self, path):
+        """为 SHViT-S1 加载预训练权重"""
+        if not path or not os.path.isfile(path):
+            print(f"=> [Error] Pretrain file not found at: {path}")
+            return
+
+        print(f"=> Loading SHViT-S1 weights from: {path}")
+        checkpoint = torch.load(path, map_location="cpu")
+
+        # 提取 state_dict
+        if 'model' in checkpoint:
+            state_dict = checkpoint['model']
+        elif 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+        else:
+            state_dict = checkpoint
+
+        # 清理键名：
+        # 1. 移除 'backbone.' 或 'module.' 前缀
+        # 2. 忽略分类头 'head.' 或 'fc.'
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            name = k
+            if name.startswith('module.'): name = name[7:]
+            if name.startswith('backbone.'): name = name[9:]
+
+            # 过滤掉不属于编码器的层（分类层）
+            if any(x in name for x in ['head', 'fc', 'classifier']):
+                continue
+
+            new_state_dict[name] = v
+
+        # 加载到 net_depth_encoder.encoder 中
+        # 因为我们的封装结构是：SHViTEncoder -> self.encoder (Partial_ViT_Exp)
+        msg = self.net_depth_encoder.encoder.load_state_dict(new_state_dict, strict=False)
+
+        print(f"=> Successfully loaded weights.")
+        print(f"=> Missing keys (should only be head-related): {msg.missing_keys[:5]}")
+
     def load_pretrain(self):
+
+        # 检查是否是 SHViT 模型
+        if self.model_str == 'shvit':
+            self.load_shvit_weights(self.mypretrain)
+            return  # 加载完直接返回
+
+        # 以下是原有的加载逻辑 (针对 lite-mono 等)
+        if self.mypretrain is None:
+            return
+
         # only designed for lite-mono
         # self.mypretrain = os.path.expanduser(self.mypretrain)
         path = self.mypretrain
@@ -7065,6 +7590,157 @@ if __name__ == '__main__':
     print(output.size())
 ```
 
+#### 文件: `LDAM.py`
+
+```py
+import torch
+import torch.nn as nn
+import math
+import torch.nn.functional as F
+
+def modulate(x, shift, scale):
+    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        output = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        return output * self.weight
+
+def lambda_init_fn(depth):
+    # 根据深度动态调整初始λ，深度越深，差分权重相对越稳定
+    if depth is None: depth = 1
+    return 0.8 - 0.6 * math.exp(-0.3 * depth)
+
+class LDAM(nn.Module):
+    """
+    两级差分注意力融合模块 (Two-level Differential Attention Fusion Module)
+    用于肠道内窥镜深度估计的跳跃连接处。
+    """
+    def __init__(self, enc_dim, dec_dim, out_dim, n=49, block_depth=1, num_heads=8):
+        super().__init__()
+        self.n = n  # 全局视觉令牌数量
+        self.num_heads = num_heads
+        
+        # 1. 特征拼接与对齐
+        self.fusion_conv = nn.Sequential(
+            nn.Linear(enc_dim + dec_dim, out_dim),
+            nn.LayerNorm(out_dim)
+        )
+        
+        head_dim = out_dim // num_heads
+        self.scale = head_dim ** -0.5
+        
+        # 2. 局部差分交互 (Local-level)
+        # 使用DW-Conv模拟局部窗口内的特征差异提取
+        self.local_dwc = nn.Conv2d(out_dim, out_dim, kernel_size=3, padding=1, groups=out_dim)
+        self.local_norm = RMSNorm(out_dim)
+        
+        # 3. 全局差分注意力 (Global-level)
+        self.qkv = nn.Linear(out_dim, out_dim * 3)
+        self.pool = nn.AdaptiveAvgPool2d(output_size=(int(n**0.5), int(n**0.5)))
+        
+        # 视觉令牌偏置 (Positive/Negative Streams)
+        self.e_pos = nn.Parameter(torch.randn(1, n, out_dim) * 0.02)
+        self.e_neg = nn.Parameter(torch.randn(1, n, out_dim) * 0.02)
+        
+        # 差分系数 λ
+        self.lambda_init = lambda_init_fn(block_depth)
+        self.lambda_q1 = nn.Parameter(torch.zeros(head_dim).normal_(0, 0.1))
+        self.lambda_k1 = nn.Parameter(torch.zeros(head_dim).normal_(0, 0.1))
+        self.lambda_q2 = nn.Parameter(torch.zeros(head_dim).normal_(0, 0.1))
+        self.lambda_k2 = nn.Parameter(torch.zeros(head_dim).normal_(0, 0.1))
+        
+        self.subln = RMSNorm(head_dim)
+        self.proj = nn.Linear(out_dim, out_dim)
+        
+        # 4. 可学习通道门控分支
+        self.gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(out_dim, out_dim // 4, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_dim // 4, out_dim, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, f_enc, f_dec):
+        """
+        f_enc: 编码器特征 [B, C1, H, W]
+        f_dec: 解码器上采样特征 [B, C2, H, W]
+        """
+        B, C_e, H, W = f_enc.shape
+        N = H * W
+        
+        # --- 步骤 1: 特征拼接与空间展平 ---
+        # [B, C1+C2, H, W]
+        x_cat = torch.cat([f_enc, f_dec], dim=1)
+        x = x_cat.permute(0, 2, 3, 1).reshape(B, N, -1)
+        x = self.fusion_conv(x) # [B, N, out_dim]
+        
+        # --- 步骤 2: 局部级差分响应 (Local-level) ---
+        # 模拟局部窗口对黏膜、血管边缘的捕捉
+        x_res = x.transpose(1, 2).reshape(B, -1, H, W)
+        local_feat = self.local_dwc(x_res)
+        # 显式计算差分响应: 原始特征 - 局部平滑特征
+        local_diff = x_res - local_feat 
+        local_out = self.local_norm(local_diff.permute(0, 2, 3, 1).reshape(B, N, -1))
+        x = x + local_out
+        
+        # --- 步骤 3: 全局级差分注意力 (Global-level) ---
+        c = x.shape[-1]
+        num_heads = self.num_heads
+        head_dim = c // num_heads
+        
+        qkv = self.qkv(x).reshape(B, N, 3, c).permute(2, 0, 1, 3)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        
+        # 全局蒸馏生成视觉令牌 t_tilde
+        # [B, out_dim, h, w] -> [B, n, out_dim]
+        t_tilde = self.pool(q.reshape(B, H, W, c).permute(0, 3, 1, 2))
+        t_tilde = t_tilde.reshape(B, c, -1).permute(0, 2, 1)
+        
+        # 构建正负流: t_+ = t_tilde + e^+, t_- = t_tilde + e^-
+        t_pos = t_tilde + self.e_pos
+        t_neg = t_tilde + self.e_neg
+        
+        # 维度变换
+        q = q.reshape(B, N, num_heads, head_dim).permute(0, 2, 1, 3)
+        t_pos = t_pos.reshape(B, self.n, num_heads, head_dim).permute(0, 2, 1, 3)
+        t_neg = t_neg.reshape(B, self.n, num_heads, head_dim).permute(0, 2, 1, 3)
+        
+        # 计算全局差分系数 λ
+        l_exp1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1))
+        l_exp2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1))
+        lambda_val = l_exp1 - l_exp2 + self.lambda_init
+        
+        # 差分交互：A = Softmax(q @ t_+^T) - λ * Softmax(q @ t_-^T)
+        attn_pos = (q * self.scale) @ t_pos.transpose(-2, -1)
+        attn_neg = (q * self.scale) @ t_neg.transpose(-2, -1)
+        attn = F.softmax(attn_pos, dim=-1) - lambda_val * F.softmax(attn_neg, dim=-1)
+        
+        # 聚合全局信息
+        v_pooled = self.pool(v.reshape(B, H, W, c).permute(0, 3, 1, 2)).reshape(B, c, -1).permute(0, 2, 1)
+        v_pooled = v_pooled.reshape(B, self.n, num_heads, head_dim).permute(0, 2, 1, 3)
+        
+        global_out = attn @ v_pooled # [B, M, N, d]
+        global_out = self.subln(global_out) * (1 - self.lambda_init)
+        global_out = global_out.transpose(1, 2).reshape(B, N, c)
+        global_out = self.proj(global_out)
+        
+        # --- 步骤 4: 通道门控与最终融合 ---
+        f_out = global_out.transpose(1, 2).reshape(B, c, H, W)
+        gate_w = self.gate(f_out)
+        
+        # 动态加权原始投影特征与差分注意力特征
+        out = (1 - gate_w) * x_res + gate_w * f_out
+        
+        return out
+```
+
 #### 文件: `LPA.py`
 
 ```py
@@ -7330,6 +8006,157 @@ if __name__ == '__main__':
     block = SMFAv2(dim=36)
     out = block(inp)
     print('Output shape:', out.shape)
+
+```
+
+#### 文件: `T_A.py`
+
+```py
+from __future__ import absolute_import, division, print_function
+
+import time
+import json
+import datasets.lowcam_dataset as datasets
+import models.encoders as encoders
+import models.decoders as decoders
+import models.endodac as endodac
+from models.endodac import DPTHead
+import numpy as np
+import torch.optim as optim
+import networks
+
+from utils.utils import *
+from utils.layers import *
+from torch.utils.data import DataLoader
+from tensorboardX import SummaryWriter
+import random
+
+
+class Trim:
+    @staticmethod
+    def patchify(imgs):
+        """
+        imgs: (N, 3, H, W)
+        x: (N, L, patch_size**2 *3)
+        """
+        p = 32
+        assert imgs.shape[2] % p == 0
+
+        h = imgs.shape[2] // p
+        w = imgs.shape[3] // p
+        x = imgs.reshape(shape=(imgs.shape[0], 3, h, p, w, p))
+        x = torch.einsum('nchpwq->nhwpqc', x)
+        x = x.reshape(shape=(imgs.shape[0], h * w, p ** 2 * 3))
+        return x
+
+    @staticmethod
+    def patchify_uncertainty(imgs):
+        """
+        imgs: (N, 3, H, W)
+        x: (N, L, patch_size**2 *3)
+        """
+        p = 32
+        assert imgs.shape[1] % p == 0
+
+        h = imgs.shape[1] // p
+        w = imgs.shape[2] // p
+        x = imgs.reshape(shape=(imgs.shape[0], h, p, w, p))
+        x = torch.einsum('nhpwq->nhwpq', x)
+        x = x.reshape(shape=(imgs.shape[0], h * w, p ** 2))
+        return x
+
+    @staticmethod
+    def deal_uncertainty_patch(patch):
+        uncertainty_patch = patch
+        uncertainty_mask = torch.ones((patch.shape[0], patch.shape[1]))
+
+        for i in range(uncertainty_patch.shape[0]):
+            k = int(0.75 * len(uncertainty_patch[i]))
+            largest_k = torch.topk(uncertainty_patch[i], k)
+            k_value = largest_k.values
+            k_value = k_value[-1]
+            for j in range(uncertainty_patch.shape[1]):
+
+                if uncertainty_patch[i][j] <= k_value:
+                    uncertainty_mask[i][j] = 0
+
+            for j in range(uncertainty_patch.shape[1]):
+                if uncertainty_mask[i][j] == 0:
+                    seed = random.random() > 0.5
+                    if seed:
+                        uncertainty_mask[i][j] = 1
+                elif uncertainty_mask[i][j] == 1:
+                    seed = random.random() > 1 - 0.5 * 0.25 / (1 - 0.25)
+                    if seed:
+                        uncertainty_mask[i][j] = 0
+
+        return uncertainty_mask
+
+    @staticmethod
+    def unpatchify(x):
+        """
+        x: (N, L, patch_size**2 *3)
+        imgs: (N, 3, H, W)
+        """
+        p = 32
+        h = 8
+        w = 10
+        # h = w = int(x.shape[1]**.5)
+        assert h * w == x.shape[1]
+
+        x = x.reshape(shape=(x.shape[0], h, w, p, p, 3))
+        x = torch.einsum('nhwpqc->nchpwq', x)
+        imgs = x.reshape(shape=(x.shape[0], 3, h * p, w * p))
+        return imgs
+
+    @staticmethod
+    def random_masking(x, mask_ratio):
+        """
+        Perform per-sample random masking by per-sample shuffling.
+        Per-sample shuffling is done by argsort random noise.
+        x: [N, L, D], sequence
+        """
+        N, L, D = x.shape  # batch, length, dim
+        len_keep = int(L * (1 - mask_ratio))
+
+        noise = torch.rand(N, L, device='cuda')  # noise in [0, 1]
+
+        # sort noise for each sample
+        ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove
+        ids_restore = torch.argsort(ids_shuffle, dim=1)
+
+        # keep the first subset
+        ids_keep = ids_shuffle[:, :len_keep]
+        x_masked = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, D))
+
+        # generate the binary mask: 0 is keep, 1 is remove
+        mask = torch.ones([N, L], device='cuda')
+        mask[:, :len_keep] = 0
+        # unshuffle to get the binary mask
+        mask = torch.gather(mask, dim=1, index=ids_restore)
+
+        return x_masked, mask, ids_restore
+
+
+class Aug:
+
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def fuse_recon_and_detail(inputs, f_i, models, lam=1.0):
+        import torch
+        features_recon = models['pretrained_encoder'](inputs["color_aug", f_i, 0])
+        recon_outputs = models['pretrained_recon'](features_recon)[('disp', 0)]
+
+        transform_input = [inputs["color_aug", f_i, 0], recon_outputs]
+        transform_inputs = models["detail_encoder"](torch.cat(transform_input, 1))
+        detail_image = models["detail"](transform_inputs)
+
+        residual_image = detail_image[("transform", 0)] + recon_outputs
+
+        return residual_image
+
 
 ```
 
@@ -8221,6 +9048,537 @@ class LayerNorm2d(nn.Module):
 
 ```
 
+#### 文件: `contmix.py`
+
+```py
+'''
+This is a plug-and-play implementation of ContMix block in the paper:
+https://arxiv.org/abs/2502.20087
+'''
+import warnings
+import torch
+import torch.nn.functional as F
+from torch import nn
+from einops import rearrange, einsum
+from timm.models.layers import DropPath, to_2tuple
+from torch.utils.checkpoint import checkpoint
+
+try:
+    from natten.functional import na2d_av
+    has_natten = True
+except:
+    has_natten = False
+    warnings.warn("The efficiency may be reduced since 'natten' is not installed."
+                  " It is recommended to install natten for better performance.")
+
+
+def get_conv2d(in_channels,
+               out_channels,
+               kernel_size,
+               stride,
+               padding,
+               dilation,
+               groups,
+               bias,
+               attempt_use_lk_impl=True):
+
+    kernel_size = to_2tuple(kernel_size)
+    if padding is None:
+        padding = (kernel_size[0] // 2, kernel_size[1] // 2)
+    else:
+        padding = to_2tuple(padding)
+    need_large_impl = kernel_size[0] == kernel_size[1] and kernel_size[0] > 5 and padding == (kernel_size[0] // 2, kernel_size[1] // 2)
+
+    if attempt_use_lk_impl and need_large_impl:
+        print('---------------- trying to import iGEMM implementation for large-kernel conv')
+        try:
+            from depthwise_conv2d_implicit_gemm import DepthWiseConv2dImplicitGEMM
+            print('---------------- found iGEMM implementation ')
+        except:
+            DepthWiseConv2dImplicitGEMM = None
+            print('---------------- found no iGEMM. use original conv. follow https://github.com/AILab-CVC/UniRepLKNet to install it.')
+        if DepthWiseConv2dImplicitGEMM is not None and need_large_impl and in_channels == out_channels \
+                and out_channels == groups and stride == 1 and dilation == 1:
+            print(f'===== iGEMM Efficient Conv Impl, channels {in_channels}, kernel size {kernel_size} =====')
+            return DepthWiseConv2dImplicitGEMM(in_channels, kernel_size, bias=bias)
+
+    return nn.Conv2d(in_channels, out_channels,
+                     kernel_size=kernel_size,
+                     stride=stride,
+                     padding=padding,
+                     dilation=dilation,
+                     groups=groups,
+                     bias=bias)
+
+
+def get_bn(dim, use_sync_bn=False):
+    if use_sync_bn:
+        return nn.SyncBatchNorm(dim)
+    else:
+        return nn.BatchNorm2d(dim)
+
+
+def fuse_bn(conv, bn):
+    conv_bias = 0 if conv.bias is None else conv.bias
+    std = (bn.running_var + bn.eps).sqrt()
+    return conv.weight * (bn.weight / std).reshape(-1, 1, 1, 1), bn.bias + (conv_bias - bn.running_mean) * bn.weight / std
+
+def convert_dilated_to_nondilated(kernel, dilate_rate):
+    identity_kernel = torch.ones((1, 1, 1, 1)).to(kernel.device)
+    if kernel.size(1) == 1:
+        #   This is a DW kernel
+        dilated = F.conv_transpose2d(kernel, identity_kernel, stride=dilate_rate)
+        return dilated
+    else:
+        #   This is a dense or group-wise (but not DW) kernel
+        slices = []
+        for i in range(kernel.size(1)):
+            dilated = F.conv_transpose2d(kernel[:,i:i+1,:,:], identity_kernel, stride=dilate_rate)
+            slices.append(dilated)
+        return torch.cat(slices, dim=1)
+
+def merge_dilated_into_large_kernel(large_kernel, dilated_kernel, dilated_r):
+    large_k = large_kernel.size(2)
+    dilated_k = dilated_kernel.size(2)
+    equivalent_kernel_size = dilated_r * (dilated_k - 1) + 1
+    equivalent_kernel = convert_dilated_to_nondilated(dilated_kernel, dilated_r)
+    rows_to_pad = large_k // 2 - equivalent_kernel_size // 2
+    merged_kernel = large_kernel + F.pad(equivalent_kernel, [rows_to_pad] * 4)
+    return merged_kernel
+
+
+class SEModule(nn.Module):
+    def __init__(self, dim, red=8, inner_act=nn.GELU, out_act=nn.Sigmoid):
+        super().__init__()
+        inner_dim = max(16, dim // red)
+        self.proj = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(dim, inner_dim, kernel_size=1),
+            inner_act(),
+            nn.Conv2d(inner_dim, dim, kernel_size=1),
+            out_act(),
+        )
+
+    def forward(self, x):
+        x = x * self.proj(x)
+        return x
+
+
+class LayerScale(nn.Module):
+    def __init__(self, dim, init_value=1e-5):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(dim, 1, 1, 1)*init_value,
+                                   requires_grad=True)
+        self.bias = nn.Parameter(torch.zeros(dim), requires_grad=True)
+
+    def forward(self, x):
+
+        x = F.conv2d(x, weight=self.weight, bias=self.bias, groups=x.shape[1])
+
+        return x
+
+
+class LayerNorm2d(nn.LayerNorm):
+    def __init__(self, dim):
+        super().__init__(normalized_shape=dim, eps=1e-6)
+
+    def forward(self, x):
+        x = rearrange(x, 'b c h w -> b h w c')
+        x = super().forward(x)
+        x = rearrange(x, 'b h w c -> b c h w')
+        return x.contiguous()
+
+
+
+class GRN(nn.Module):
+    """ GRN (Global Response Normalization) layer
+    Originally proposed in ConvNeXt V2 (https://arxiv.org/abs/2301.00808)
+    This implementation is more efficient than the original (https://github.com/facebookresearch/ConvNeXt-V2)
+    We assume the inputs to this layer are (N, C, H, W)
+    """
+    def __init__(self, dim, use_bias=True):
+        super().__init__()
+        self.use_bias = use_bias
+        self.gamma = nn.Parameter(torch.zeros(1, dim, 1, 1))
+        if self.use_bias:
+            self.beta = nn.Parameter(torch.zeros(1, dim, 1, 1))
+
+
+    def forward(self, x):
+        Gx = torch.norm(x, p=2, dim=(-1, -2), keepdim=True)
+        Nx = Gx / (Gx.mean(dim=1, keepdim=True) + 1e-6)
+        if self.use_bias:
+            return (self.gamma * Nx + 1) * x + self.beta
+        else:
+            return (self.gamma * Nx + 1) * x
+
+
+
+class DilatedReparamBlock(nn.Module):
+    """
+    Dilated Reparam Block proposed in UniRepLKNet (https://github.com/AILab-CVC/UniRepLKNet)
+    We assume the inputs to this block are (N, C, H, W)
+    """
+    def __init__(self, channels, kernel_size, deploy, use_sync_bn=False, attempt_use_lk_impl=True):
+        super().__init__()
+        self.lk_origin = get_conv2d(channels, channels, kernel_size, stride=1,
+                                    padding=kernel_size//2, dilation=1, groups=channels, bias=deploy,
+                                    attempt_use_lk_impl=attempt_use_lk_impl)
+        self.attempt_use_lk_impl = attempt_use_lk_impl
+
+        #   Default settings. We did not tune them carefully. Different settings may work better.
+        if kernel_size == 19:
+            self.kernel_sizes = [5, 7, 9, 9, 3, 3, 3]
+            self.dilates = [1, 1, 1, 2, 4, 5, 7]
+        elif kernel_size == 17:
+            self.kernel_sizes = [5, 7, 9, 3, 3, 3]
+            self.dilates = [1, 1, 2, 4, 5, 7]
+        elif kernel_size == 15:
+            self.kernel_sizes = [5, 7, 7, 3, 3, 3]
+            self.dilates = [1, 1, 2, 3, 5, 7]
+        elif kernel_size == 13:
+            self.kernel_sizes = [5, 7, 7, 3, 3, 3]
+            self.dilates = [1, 1, 2, 3, 4, 5]
+        elif kernel_size == 11:
+            self.kernel_sizes = [5, 7, 5, 3, 3, 3]
+            self.dilates = [1, 1, 2, 3, 4, 5]
+        elif kernel_size == 9:
+            self.kernel_sizes = [5, 7, 5, 3, 3]
+            self.dilates = [1, 1, 2, 3, 4]
+        elif kernel_size == 7:
+            self.kernel_sizes = [5, 3, 3, 3]
+            self.dilates = [1, 1, 2, 3]
+        elif kernel_size == 5:
+            self.kernel_sizes = [3, 3]
+            self.dilates = [1, 2]
+        else:
+            raise ValueError('Dilated Reparam Block requires kernel_size >= 5')
+
+        if not deploy:
+            self.origin_bn = get_bn(channels, use_sync_bn)
+            for k, r in zip(self.kernel_sizes, self.dilates):
+                self.__setattr__('dil_conv_k{}_{}'.format(k, r),
+                                 nn.Conv2d(in_channels=channels, out_channels=channels, kernel_size=k, stride=1,
+                                           padding=(r * (k - 1) + 1) // 2, dilation=r, groups=channels,
+                                           bias=False))
+                self.__setattr__('dil_bn_k{}_{}'.format(k, r), get_bn(channels, use_sync_bn=use_sync_bn))
+
+    def forward(self, x):
+        if not hasattr(self, 'origin_bn'):      # deploy mode
+            return self.lk_origin(x)
+        out = self.origin_bn(self.lk_origin(x))
+        for k, r in zip(self.kernel_sizes, self.dilates):
+            conv = self.__getattr__('dil_conv_k{}_{}'.format(k, r))
+            bn = self.__getattr__('dil_bn_k{}_{}'.format(k, r))
+            out = out + bn(conv(x))
+        return out
+
+    def merge_dilated_branches(self):
+        if hasattr(self, 'origin_bn'):
+            origin_k, origin_b = fuse_bn(self.lk_origin, self.origin_bn)
+            for k, r in zip(self.kernel_sizes, self.dilates):
+                conv = self.__getattr__('dil_conv_k{}_{}'.format(k, r))
+                bn = self.__getattr__('dil_bn_k{}_{}'.format(k, r))
+                branch_k, branch_b = fuse_bn(conv, bn)
+                origin_k = merge_dilated_into_large_kernel(origin_k, branch_k, r)
+                origin_b += branch_b
+            merged_conv = get_conv2d(origin_k.size(0), origin_k.size(0), origin_k.size(2), stride=1,
+                                    padding=origin_k.size(2)//2, dilation=1, groups=origin_k.size(0), bias=True,
+                                    attempt_use_lk_impl=self.attempt_use_lk_impl)
+            merged_conv.weight.data = origin_k
+            merged_conv.bias.data = origin_b
+            self.lk_origin = merged_conv
+            self.__delattr__('origin_bn')
+            for k, r in zip(self.kernel_sizes, self.dilates):
+                self.__delattr__('dil_conv_k{}_{}'.format(k, r))
+                self.__delattr__('dil_bn_k{}_{}'.format(k, r))
+
+
+class ResDWConv(nn.Conv2d):
+    '''
+    Depthwise conv with residual connection
+    '''
+    def __init__(self, dim, kernel_size=3):
+        super().__init__(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
+
+    def forward(self, x):
+        x = x + super().forward(x)
+        return x
+
+
+class ContMixBlock(nn.Module):
+    '''
+    A plug-and-play implementation of ContMix module with FFN layer
+    Paper: https://arxiv.org/abs/2502.20087
+    '''
+    def __init__(self,
+                 dim=64,
+                 kernel_size=7,
+                 smk_size=5,
+                 num_heads=2,
+                 mlp_ratio=4,
+                 res_scale=False,
+                 ls_init_value=None,
+                 drop_path=0,
+                 norm_layer=LayerNorm2d,
+                 use_gemm=False,
+                 deploy=False,
+                 use_checkpoint=False,
+                 **kwargs):
+
+        super().__init__()
+        '''
+        Args:
+        kernel_size: kernel size of the main ContMix branch, default is 7
+        smk_size: kernel size of the secondary ContMix branch, default is 5
+        num_heads: number of dynamic kernel heads, default is 2
+        mlp_ratio: ratio of mlp hidden dim to embedding dim, default is 4
+        res_scale: whether to use residual layer scale, default is False
+        ls_init_value: layer scale init value, default is None
+        drop_path: drop path rate, default is 0
+        norm_layer: normalization layer, default is LayerNorm2d
+        use_gemm: whether to use iGEMM implementation for large kernel conv, default is False
+        deploy: whether to use deploy mode, default is False
+        use_checkpoint: whether to use grad checkpointing, default is False
+        **kwargs: other arguments
+        '''
+        mlp_dim = int(dim*mlp_ratio)
+        self.kernel_size = kernel_size
+        self.res_scale = res_scale
+        self.use_gemm = use_gemm
+        self.smk_size = smk_size
+        self.num_heads = num_heads * 2
+        head_dim = dim // self.num_heads
+        self.scale = head_dim ** -0.5
+        self.use_checkpoint = use_checkpoint
+
+        self.dwconv1 = ResDWConv(dim, kernel_size=3)
+        self.norm1 = norm_layer(dim)
+
+        self.weight_query = nn.Sequential(
+            nn.Conv2d(dim, dim//2, kernel_size=1, bias=False),
+            nn.BatchNorm2d(dim//2),
+        )
+        self.weight_key = nn.Sequential(
+            nn.AdaptiveAvgPool2d(7),
+            nn.Conv2d(dim, dim//2, kernel_size=1, bias=False),
+            nn.BatchNorm2d(dim//2),
+        )
+        self.weight_value = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(dim),
+        )
+
+        self.weight_proj = nn.Conv2d(49, kernel_size**2 + smk_size**2, kernel_size=1)
+        self.fusion_proj = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(dim),
+        )
+
+        self.lepe = nn.Sequential(
+            DilatedReparamBlock(dim, kernel_size=kernel_size, deploy=deploy, use_sync_bn=False, attempt_use_lk_impl=use_gemm),
+            nn.BatchNorm2d(dim),
+        )
+        self.se_layer = SEModule(dim)
+        self.gate = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.SiLU(),
+        )
+
+        self.proj = nn.Sequential(
+            nn.BatchNorm2d(dim),
+            nn.Conv2d(dim, dim, kernel_size=1),
+        )
+
+        self.dwconv2 = ResDWConv(dim, kernel_size=3)
+        self.norm2 = norm_layer(dim)
+        self.mlp = nn.Sequential(
+            nn.Conv2d(dim, mlp_dim, kernel_size=1),
+            nn.GELU(),
+            ResDWConv(mlp_dim, kernel_size=3),
+            GRN(mlp_dim),
+            nn.Conv2d(mlp_dim, dim, kernel_size=1),
+        )
+
+        self.ls1 = LayerScale(dim, init_value=ls_init_value) if ls_init_value is not None else nn.Identity()
+        self.ls2 = LayerScale(dim, init_value=ls_init_value) if ls_init_value is not None else nn.Identity()
+        self.drop_path = DropPath(drop_path) if drop_path > 0 else nn.Identity()
+
+        self.get_rpb()
+
+    def get_rpb(self):
+        self.rpb_size1 = 2 * self.smk_size - 1
+        self.rpb1 = nn.Parameter(torch.empty(self.num_heads, self.rpb_size1, self.rpb_size1))
+        self.rpb_size2 = 2 * self.kernel_size - 1
+        self.rpb2 = nn.Parameter(torch.empty(self.num_heads, self.rpb_size2, self.rpb_size2))
+        nn.init.trunc_normal_(self.rpb1, std=0.02)
+        nn.init.trunc_normal_(self.rpb2, std=0.02)
+
+    @torch.no_grad()
+    def generate_idx(self, kernel_size):
+        rpb_size = 2 * kernel_size - 1
+        idx_h = torch.arange(0, kernel_size)
+        idx_w = torch.arange(0, kernel_size)
+        idx_k = ((idx_h.unsqueeze(-1) * rpb_size) + idx_w).view(-1)
+        return (idx_h, idx_w, idx_k)
+
+    def apply_rpb(self, attn, rpb, height, width, kernel_size, idx_h, idx_w, idx_k):
+        """
+        RPB implementation directly borrowed from https://tinyurl.com/mrbub4t3
+        """
+        num_repeat_h = torch.ones(kernel_size, dtype=torch.long)
+        num_repeat_w = torch.ones(kernel_size, dtype=torch.long)
+        num_repeat_h[kernel_size//2] = height - (kernel_size-1)
+        num_repeat_w[kernel_size//2] = width - (kernel_size-1)
+        bias_hw = (idx_h.repeat_interleave(num_repeat_h).unsqueeze(-1) * (2*kernel_size-1)) + idx_w.repeat_interleave(num_repeat_w)
+        bias_idx = bias_hw.unsqueeze(-1) + idx_k
+        bias_idx = bias_idx.reshape(-1, int(kernel_size**2))
+        bias_idx = torch.flip(bias_idx, [0])
+        rpb = torch.flatten(rpb, 1, 2)[:, bias_idx]
+        rpb = rpb.reshape(1, int(self.num_heads), int(height), int(width), int(kernel_size**2))
+        return attn + rpb
+
+    def reparm(self):
+        for m in self.modules():
+            if isinstance(m, DilatedReparamBlock):
+                m.merge_dilated_branches()
+
+    def _forward_inner(self, x):
+        input_resolution = x.shape[2:]
+        B, C, H, W = x.shape
+
+        x = self.dwconv1(x)
+        identity = x
+        x = self.norm1(x)
+        gate = self.gate(x)
+        lepe = self.lepe(x)
+
+        is_pad = False
+        if min(H, W) < self.kernel_size:
+            is_pad = True
+            if H < W:
+                size = (self.kernel_size, int(self.kernel_size / H * W))
+            else:
+                size = (int(self.kernel_size / W * H), self.kernel_size)
+            x = F.interpolate(x, size=size, mode='bilinear', align_corners=False)
+            H, W = size
+
+        query = self.weight_query(x) * self.scale
+        key = self.weight_key(x)
+        value = self.weight_value(x)
+
+        query = rearrange(query, 'b (g c) h w -> b g c (h w)', g=self.num_heads)
+        key = rearrange(key, 'b (g c) h w -> b g c (h w)', g=self.num_heads)
+        weight = einsum(query, key, 'b g c n, b g c l -> b g n l')
+        weight = rearrange(weight, 'b g n l -> b l g n').contiguous()
+        weight = self.weight_proj(weight)
+        weight = rearrange(weight, 'b l g (h w) -> b g h w l', h=H, w=W)
+
+        attn1, attn2 = torch.split(weight, split_size_or_sections=[self.smk_size**2, self.kernel_size**2], dim=-1)
+        rpb1_idx = self.generate_idx(self.smk_size)
+        rpb2_idx = self.generate_idx(self.kernel_size)
+        attn1 = self.apply_rpb(attn1, self.rpb1, H, W, self.smk_size, *rpb1_idx)
+        attn2 = self.apply_rpb(attn2, self.rpb2, H, W, self.kernel_size, *rpb2_idx)
+        attn1 = torch.softmax(attn1, dim=-1)
+        attn2 = torch.softmax(attn2, dim=-1)
+        value = rearrange(value, 'b (m g c) h w -> m b g h w c', m=2, g=self.num_heads)
+
+        if has_natten:
+            x1 = na2d_av(attn1, value[0], kernel_size=self.smk_size)
+            x2 = na2d_av(attn2, value[1], kernel_size=self.kernel_size)
+        else:
+            pad1 = self.smk_size // 2
+            pad2 = self.kernel_size // 2
+            H_o1 = H - 2 * pad1
+            W_o1 = W - 2 * pad1
+            H_o2 = H - 2 * pad2
+            W_o2 = W - 2 * pad2
+
+            v1 = rearrange(value[0], 'b g h w c -> b (g c) h w')
+            v2 = rearrange(value[1], 'b g h w c -> b (g c) h w')
+
+            v1 = F.unfold(v1, kernel_size=self.smk_size).reshape(B, -1, H_o1, W_o1)
+            v2 = F.unfold(v2, kernel_size=self.kernel_size).reshape(B, -1, H_o2, W_o2)
+
+            v1 = F.pad(v1, (pad1, pad1, pad1, pad1), mode='replicate')
+            v2 = F.pad(v2, (pad2, pad2, pad2, pad2), mode='replicate')
+
+            v1 = rearrange(v1, 'b (g c k) h w -> b g c h w k', g=self.num_heads, k=self.smk_size**2, h=H, w=W)
+            v2 = rearrange(v2, 'b (g c k) h w -> b g c h w k', g=self.num_heads, k=self.kernel_size**2, h=H, w=W)
+
+            x1 = einsum(attn1, v1, 'b g h w k, b g c h w k -> b g h w c')
+            x2 = einsum(attn2, v2, 'b g h w k, b g c h w k -> b g h w c')
+
+        x = torch.cat([x1, x2], dim=1)
+        x = rearrange(x, 'b g h w c -> b (g c) h w', h=H, w=W)
+
+        if is_pad:
+            x = F.adaptive_avg_pool2d(x, input_resolution)
+
+        x = self.fusion_proj(x)
+
+        x = x + lepe
+        x = self.se_layer(x)
+
+        x = gate * x
+        x = self.proj(x)
+
+        if self.res_scale:
+            x = self.ls1(identity) + self.drop_path(x)
+        else:
+            x = identity + self.drop_path(self.ls1(x))
+
+        x = self.dwconv2(x)
+
+        if self.res_scale:
+            x = self.ls2(x) + self.drop_path(self.mlp(self.norm2(x)))
+        else:
+            x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
+
+        return x
+
+    def forward(self, x):
+        if self.use_checkpoint and x.requires_grad:
+            x = checkpoint(self._forward_inner, x, use_reentrant=False)
+        else:
+            x = self._forward_inner(x)
+        return x
+
+
+if __name__ == '__main__':
+
+    from timm.utils import random_seed
+    random_seed(6)
+
+    x = torch.randn(1, 64, 32, 32).cuda()
+    model = ContMixBlock(dim=64,
+                         num_heads=2,
+                         kernel_size=13,
+                         smk_size=5,
+                         mlp_ratio=4,
+                         res_scale=True,
+                         ls_init_value=1,
+                         drop_path=0,
+                         norm_layer=LayerNorm2d,
+                         use_gemm=True,
+                         deploy=False,
+                         use_checkpoint=False)
+    print(model)
+    model.cuda()
+    model.eval()
+    y = model(x)
+    print(y.shape)
+
+    # Reparametrize model, more details can be found at:
+    # https://github.com/AILab-CVC/UniRepLKNet/tree/main
+    model.reparm()
+    z = model(x)
+
+    # Showing difference between original and reparametrized model
+    print((z - y).abs().sum() / y.abs().sum())
+```
+
 #### 文件: `custom_modules.py`
 
 ```py
@@ -8319,6 +9677,7 @@ import torch.nn as nn
 from collections import OrderedDict
 from .layers import *
 from .FMBConv import FMBPlusPlus
+from .LDAM import LDAM
 
 
 class DepthDecoder(nn.Module):
@@ -8335,11 +9694,23 @@ class DepthDecoder(nn.Module):
 
         # decoder
         self.convs = OrderedDict()
+        self.ldam_modules = nn.ModuleList()
+        
         for i in range(4, -1, -1):
             # upconv_0
             num_ch_in = self.num_ch_enc[-1] if i == 4 else self.num_ch_dec[i + 1]
             num_ch_out = self.num_ch_dec[i]
             self.convs[("upconv", i, 0)] = ConvBlock(num_ch_in, num_ch_out)
+
+            # 为跳跃连接添加 LDAM 模块
+            if self.use_skips and i > 0:
+                self.ldam_modules.append(
+                    LDAM(
+                        enc_dim=self.num_ch_enc[i - 1],
+                        dec_dim=num_ch_out,
+                        out_dim=self.num_ch_enc[i - 1]
+                    )
+                )
 
             # upconv_1
             num_ch_in = self.num_ch_dec[i]
@@ -8359,11 +9730,16 @@ class DepthDecoder(nn.Module):
 
         # decoder
         x = input_features[-1]
+        ldam_idx = 0
         for i in range(4, -1, -1):
             x = self.convs[("upconv", i, 0)](x)
-            x = [upsample(x, mode=self.upsample_mode)]
+            upsampled_x = upsample(x, mode=self.upsample_mode)
+            x = [upsampled_x]
             if self.use_skips and i > 0:
-                x += [input_features[i - 1]]
+                # 使用 LDAM 模块融合编码器和解码器特征
+                fused_feat = self.ldam_modules[ldam_idx](input_features[i - 1], upsampled_x)
+                x += [fused_feat]
+                ldam_idx += 1
             x = torch.cat(x, 1)
             x = self.convs[("upconv", i, 1)](x)
             if i in self.scales:
@@ -11228,13 +12604,20 @@ import torch
 import torch.nn as nn
 from .LAE import LAE
 from .modifyppm import ModifyPPM
+from .contmix import ContMixBlock
 
 class IntrinsicsHead(nn.Module):
-    def __init__(self, num_ch_enc):
+    def __init__(self, num_ch_enc, use_contmix=True):
         super(IntrinsicsHead, self).__init__()
 
         self.num_ch_enc = num_ch_enc
+        self.use_contmix = use_contmix
+        
         self.convs_suqeeze = nn.Conv2d(self.num_ch_enc[-1], 256, 1)
+        
+        if self.use_contmix:
+            self.contmix_block = ContMixBlock(dim=256, kernel_size=7, smk_size=5, num_heads=2, mlp_ratio=4)
+            
         self.focal_length_conv = nn.Conv2d(256, 2, 1, bias=False)
         self.offsets_conv = nn.Conv2d(256, 2, 1, bias=False)
         self.global_pooling = nn.AdaptiveAvgPool2d(1)
@@ -11248,6 +12631,14 @@ class IntrinsicsHead(nn.Module):
         batch_size = bottleneck.shape[0]
         intrinsics_mat = torch.eye(4).unsqueeze(0).to(curr_device)
         intrinsics_mat = intrinsics_mat.repeat(batch_size, 1, 1)
+        
+        # 只有当输入通道不是256时才进行squeeze转换
+        if bottleneck.shape[1] != 256:
+            bottleneck = self.convs_suqeeze(bottleneck)
+        
+        if self.use_contmix:
+            bottleneck = self.contmix_block(bottleneck)
+            
         bottleneck = self.ppm(bottleneck)
         bottleneck = self.lae(bottleneck)
 
@@ -11266,12 +12657,6 @@ class IntrinsicsHead(nn.Module):
         intrinsics_mat[:, :2, 2:3] = offsets
 
         return intrinsics_mat
-```
-
-#### 文件: `intrinsics_net.py`
-
-```py
-
 ```
 
 #### 文件: `layers.py`
@@ -12043,14 +13428,16 @@ from __future__ import absolute_import, division, print_function
 import torch
 import torch.nn as nn
 from collections import OrderedDict
+from .contmix import ContMixBlock
 
 
 class PoseDecoder(nn.Module):
-    def __init__(self, num_ch_enc, num_input_features, num_frames_to_predict_for=None, stride=1):
+    def __init__(self, num_ch_enc, num_input_features, num_frames_to_predict_for=None, stride=1, use_contmix=True):
         super(PoseDecoder, self).__init__()
 
         self.num_ch_enc = num_ch_enc
         self.num_input_features = num_input_features
+        self.use_contmix = use_contmix
 
         if num_frames_to_predict_for is None:
             num_frames_to_predict_for = num_input_features - 1
@@ -12058,13 +13445,22 @@ class PoseDecoder(nn.Module):
 
         self.convs = OrderedDict()
         self.convs[("squeeze")] = nn.Conv2d(self.num_ch_enc[-1], 256, 1)
-        self.convs[("pose", 0)] = nn.Conv2d(num_input_features * 256, 256, 3, stride, 1)
+        
+        if self.use_contmix:
+            # 使用 ContMixBlock 替代第一个卷积层
+            self.contmix_block = ContMixBlock(dim=num_input_features * 256, kernel_size=7, smk_size=5, num_heads=2, mlp_ratio=4)
+            self.convs[("pose", 0)] = nn.Conv2d(num_input_features * 256, 256, 1, stride)  # 降维用的 1x1 卷积
+        else:
+            self.convs[("pose", 0)] = nn.Conv2d(num_input_features * 256, 256, 3, stride, 1)
+            
         self.convs[("pose", 1)] = nn.Conv2d(256, 256, 3, stride, 1)
         self.convs[("pose", 2)] = nn.Conv2d(256, 6 * num_frames_to_predict_for, 1)
 
         self.relu = nn.ReLU()
 
         self.net = nn.ModuleList(list(self.convs.values()))
+        if self.use_contmix:
+            self.net.append(self.contmix_block)
 
     def forward(self, input_features):
         last_features = [f[-1] for f in input_features]
@@ -12073,12 +13469,25 @@ class PoseDecoder(nn.Module):
         cat_features = torch.cat(cat_features, 1)
 
         out = cat_features
-        for i in range(3):
-            out = self.convs[("pose", i)](out)
-            if i == 1:
-                intermediate_feature = out
-            if i != 2:
-                out = self.relu(out)
+        
+        if self.use_contmix:
+            # 先通过 ContMixBlock，再降维
+            out = self.contmix_block(out)
+            out = self.convs[("pose", 0)](out)
+            # 处理后续层
+            out = self.relu(out)
+            out = self.convs[("pose", 1)](out)
+            intermediate_feature = out
+            out = self.relu(out)
+            out = self.convs[("pose", 2)](out)
+        else:
+            # 原有的流程
+            for i in range(3):
+                out = self.convs[("pose", i)](out)
+                if i == 1:
+                    intermediate_feature = out
+                if i != 2:
+                    out = self.relu(out)
 
         out = out.mean(3).mean(2)
 
@@ -12380,6 +13789,444 @@ class ResnetEncoder(nn.Module):
         self.features.append(self.encoder.layer4(self.features[-1]))
 
         return self.features
+```
+
+#### 文件: `shvit.py`
+
+```py
+import torch
+import os
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint
+import itertools
+import numpy as np
+
+from timm.models.vision_transformer import trunc_normal_
+from timm.models.layers import SqueezeExcite, DropPath, to_2tuple
+
+# from mmcv_custom import load_checkpoint, _load_checkpoint, load_state_dict
+# from mmdet.utils import get_root_logger
+# from mmdet.models.builder import BACKBONES
+# from torch.nn.modules.batchnorm import _BatchNorm
+import torch.nn as nn
+_BatchNorm = nn.modules.batchnorm._BatchNorm
+
+class GroupNorm(torch.nn.GroupNorm):
+    """
+    Group Normalization with 1 group.
+    Input: tensor in shape [B, C, H, W]
+    """
+
+    def __init__(self, num_channels, **kwargs):
+        super().__init__(1, num_channels, **kwargs)
+
+
+class Conv2d_BN(torch.nn.Sequential):
+    def __init__(self, a, b, ks=1, stride=1, pad=0, dilation=1,
+                 groups=1, bn_weight_init=1):
+        super().__init__()
+        self.add_module('c', torch.nn.Conv2d(
+            a, b, ks, stride, pad, dilation, groups, bias=False))
+        self.add_module('bn', torch.nn.BatchNorm2d(b))
+        torch.nn.init.constant_(self.bn.weight, bn_weight_init)
+        torch.nn.init.constant_(self.bn.bias, 0)
+
+    @torch.no_grad()
+    def fuse(self):
+        c, bn = self._modules.values()
+        w = bn.weight / (bn.running_var + bn.eps) ** 0.5
+        w = c.weight * w[:, None, None, None]
+        b = bn.bias - bn.running_mean * bn.weight / \
+            (bn.running_var + bn.eps) ** 0.5
+        m = torch.nn.Conv2d(w.size(1) * self.c.groups, w.size(
+            0), w.shape[2:], stride=self.c.stride, padding=self.c.padding, dilation=self.c.dilation,
+                            groups=self.c.groups)
+        m.weight.data.copy_(w)
+        m.bias.data.copy_(b)
+        return m
+
+
+class BN_Linear(torch.nn.Sequential):
+    def __init__(self, a, b, bias=True, std=0.02):
+        super().__init__()
+        self.add_module('bn', torch.nn.BatchNorm1d(a))
+        self.add_module('l', torch.nn.Linear(a, b, bias=bias))
+        trunc_normal_(self.l.weight, std=std)
+        if bias:
+            torch.nn.init.constant_(self.l.bias, 0)
+
+    @torch.no_grad()
+    def fuse(self):
+        bn, l = self._modules.values()
+        w = bn.weight / (bn.running_var + bn.eps) ** 0.5
+        b = bn.bias - self.bn.running_mean * \
+            self.bn.weight / (bn.running_var + bn.eps) ** 0.5
+        w = l.weight * w[None, :]
+        if l.bias is None:
+            b = b @ self.l.weight.T
+        else:
+            b = (l.weight @ b[:, None]).view(-1) + self.l.bias
+        m = torch.nn.Linear(w.size(1), w.size(0))
+        m.weight.data.copy_(w)
+        m.bias.data.copy_(b)
+        return m
+
+
+class PatchMerging(torch.nn.Module):
+    def __init__(self, dim, out_dim):
+        super().__init__()
+        hid_dim = int(dim * 4)
+        self.conv1 = Conv2d_BN(dim, hid_dim, 1, 1, 0)
+        self.act = torch.nn.ReLU()
+        self.conv2 = Conv2d_BN(hid_dim, hid_dim, 3, 2, 1, groups=hid_dim)
+        self.se = SqueezeExcite(hid_dim, .25)
+        self.conv3 = Conv2d_BN(hid_dim, out_dim, 1, 1, 0)
+
+    def forward(self, x):
+        x = self.conv3(self.se(self.act(self.conv2(self.act(self.conv1(x))))))
+        return x
+
+
+class Residual(torch.nn.Module):
+    def __init__(self, m, drop=0.):
+        super().__init__()
+        self.m = m
+        self.drop = drop
+
+    def forward(self, x):
+        if self.training and self.drop > 0:
+            return x + self.m(x) * torch.rand(x.size(0), 1, 1, 1,
+                                              device=x.device).ge_(self.drop).div(1 - self.drop).detach()
+        else:
+            return x + self.m(x)
+
+    @torch.no_grad()
+    def fuse(self):
+        if isinstance(self.m, Conv2d_BN):
+            m = self.m.fuse()
+            assert (m.groups == m.in_channels)
+            identity = torch.ones(m.weight.shape[0], m.weight.shape[1], 1, 1)
+            identity = torch.nn.functional.pad(identity, [1, 1, 1, 1])
+            m.weight += identity.to(m.weight.device)
+            return m
+        else:
+            return self
+
+
+class FFN(torch.nn.Module):
+    def __init__(self, ed, h):
+        super().__init__()
+        self.pw1 = Conv2d_BN(ed, h)
+        self.act = torch.nn.ReLU()
+        self.pw2 = Conv2d_BN(h, ed, bn_weight_init=0)
+
+    def forward(self, x):
+        x = self.pw2(self.act(self.pw1(x)))
+        return x
+
+
+class SHSA(torch.nn.Module):
+    """Single-Head Self-Attention"""
+
+    def __init__(self, dim, qk_dim, pdim):
+        super().__init__()
+        self.scale = qk_dim ** -0.5
+        self.qk_dim = qk_dim
+        self.dim = dim
+        self.pdim = pdim
+
+        self.pre_norm = GroupNorm(pdim)
+
+        self.qkv = Conv2d_BN(pdim, qk_dim * 2 + pdim)
+        self.proj = torch.nn.Sequential(torch.nn.ReLU(), Conv2d_BN(
+            dim, dim, bn_weight_init=0))
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        x1, x2 = torch.split(x, [self.pdim, self.dim - self.pdim], dim=1)
+        x1 = self.pre_norm(x1)
+        qkv = self.qkv(x1)
+        q, k, v = qkv.split([self.qk_dim, self.qk_dim, self.pdim], dim=1)
+        q, k, v = q.flatten(2), k.flatten(2), v.flatten(2)
+
+        attn = (q.transpose(-2, -1) @ k) * self.scale
+        attn = attn.softmax(dim=-1)
+        x1 = (v @ attn.transpose(-2, -1)).reshape(B, self.pdim, H, W)
+        x = self.proj(torch.cat([x1, x2], dim=1))
+
+        return x
+
+
+class BasicBlock(torch.nn.Module):
+    def __init__(self, dim, qk_dim, pdim, type):
+        super().__init__()
+        if type == "s":  # for later stages
+            self.conv = Residual(Conv2d_BN(dim, dim, 3, 1, 1, groups=dim, bn_weight_init=0))
+            self.mixer = Residual(SHSA(dim, qk_dim, pdim))
+            self.ffn = Residual(FFN(dim, int(dim * 2)))
+        elif type == "i":  # for early stages
+            self.conv = Residual(Conv2d_BN(dim, dim, 3, 1, 1, groups=dim, bn_weight_init=0))
+            self.mixer = torch.nn.Identity()
+            self.ffn = Residual(FFN(dim, int(dim * 2)))
+
+    def forward(self, x):
+        return self.ffn(self.mixer(self.conv(x)))
+
+
+class Partial_ViT_Exp(torch.nn.Module):
+    def __init__(self, img_size=224,
+                 patch_size=16,
+                 frozen_stages=0,
+                 in_chans=3,
+                 embed_dim=[128, 256, 384],
+                 partial_dim=[32, 64, 96],
+                 qk_dim=[16, 16, 16],
+                 depth=[1, 2, 3],
+                 types=["s", "s", "s"],
+                 down_ops=[['subsample', 2], ['subsample', 2], ['']],
+                 pretrained=None,
+                 distillation=False, ):
+        super().__init__()
+
+        resolution = img_size
+        # Patch embedding
+        self.patch_embed = torch.nn.Sequential(Conv2d_BN(in_chans, embed_dim[0] // 8, 3, 2, 1), torch.nn.ReLU(),
+                                               Conv2d_BN(embed_dim[0] // 8, embed_dim[0] // 4, 3, 2, 1),
+                                               torch.nn.ReLU(),
+                                               Conv2d_BN(embed_dim[0] // 4, embed_dim[0] // 2, 3, 2, 1),
+                                               torch.nn.ReLU(),
+                                               Conv2d_BN(embed_dim[0] // 2, embed_dim[0], 3, 2, 1))
+
+        resolution = img_size // patch_size
+        self.blocks1 = []
+        self.blocks2 = []
+        self.blocks3 = []
+
+        # Build SHViT blocks
+        for i, (ed, kd, pd, dpth, do, t) in enumerate(
+                zip(embed_dim, qk_dim, partial_dim, depth, down_ops, types)):
+            for d in range(dpth):
+                eval('self.blocks' + str(i + 1)).append(BasicBlock(ed, kd, pd, t))
+            if do[0] == 'subsample':
+                # Build SHViT downsample block
+                # ('Subsample' stride)
+                blk = eval('self.blocks' + str(i + 2))
+                blk.append(
+                    torch.nn.Sequential(Residual(Conv2d_BN(embed_dim[i], embed_dim[i], 3, 1, 1, groups=embed_dim[i])),
+                                        Residual(FFN(embed_dim[i], int(embed_dim[i] * 2))), ))
+                blk.append(PatchMerging(*embed_dim[i:i + 2]))
+
+                blk.append(torch.nn.Sequential(
+                    Residual(Conv2d_BN(embed_dim[i + 1], embed_dim[i + 1], 3, 1, 1, groups=embed_dim[i + 1])),
+                    Residual(FFN(embed_dim[i + 1], int(embed_dim[i + 1] * 2))), ))
+        self.blocks1 = torch.nn.Sequential(*self.blocks1)
+        self.blocks2 = torch.nn.Sequential(*self.blocks2)
+        self.blocks3 = torch.nn.Sequential(*self.blocks3)
+
+        self.frozen_stages = frozen_stages
+        self._freeze_stages()
+
+        if pretrained is not None:
+            self.init_weights(pretrained=pretrained)
+
+    def _freeze_stages(self):
+        if self.frozen_stages >= 0:
+            self.patch_embed.eval()
+            for param in self.patch_embed.parameters():
+                param.requires_grad = False
+
+    def init_weights(self, pretrained=None):
+        """Initialize the weights in backbone.
+
+        Args:
+            pretrained (str, optional): Path to pre-trained weights.
+                Defaults to None.
+        """
+
+        if isinstance(pretrained, str):
+            logger = get_root_logger()
+            checkpoint = _load_checkpoint(pretrained, map_location='cpu')
+
+            if not isinstance(checkpoint, dict):
+                raise RuntimeError(
+                    f'No state_dict found in checkpoint file {filename}')
+            # get state_dict from checkpoint
+            if 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+            elif 'model' in checkpoint:
+                state_dict = checkpoint['model']
+            else:
+                state_dict = checkpoint
+            # strip prefix of state_dict
+            if list(state_dict.keys())[0].startswith('module.'):
+                state_dict = {k[7:]: v for k, v in state_dict.items()}
+
+            model_state_dict = self.state_dict()
+            # bicubic interpolate attention_biases if not match
+
+            rpe_idx_keys = [
+                k for k in state_dict.keys() if "attention_bias_idxs" in k]
+            for k in rpe_idx_keys:
+                print("deleting key: ", k)
+                del state_dict[k]
+
+            relative_position_bias_table_keys = [
+                k for k in state_dict.keys() if "attention_biases" in k]
+            for k in relative_position_bias_table_keys:
+                relative_position_bias_table_pretrained = state_dict[k]
+                relative_position_bias_table_current = model_state_dict[k]
+                nH1, L1 = relative_position_bias_table_pretrained.size()
+                nH2, L2 = relative_position_bias_table_current.size()
+                if nH1 != nH2:
+                    logger.warning(f"Error in loading {k} due to different number of heads")
+                else:
+                    if L1 != L2:
+                        print("resizing key {} from {} * {} to {} * {}".format(k, L1, L1, L2, L2))
+                        # bicubic interpolate relative_position_bias_table if not match
+                        S1 = int(L1 ** 0.5)
+                        S2 = int(L2 ** 0.5)
+                        relative_position_bias_table_pretrained_resized = torch.nn.functional.interpolate(
+                            relative_position_bias_table_pretrained.view(1, nH1, S1, S1), size=(S2, S2),
+                            mode='bicubic')
+                        state_dict[k] = relative_position_bias_table_pretrained_resized.view(
+                            nH2, L2)
+
+            load_state_dict(self, state_dict, strict=False, logger=logger)
+
+    def train(self, mode=True):
+        """Convert the model into training mode while keep layers freezed."""
+        super(Partial_ViT_Exp, self).train(mode)
+        self._freeze_stages()
+        if mode:
+            for m in self.modules():
+                if isinstance(m, _BatchNorm):
+                    m.eval()
+
+    def forward(self, x):
+        # x = self.patch_embed(x)
+        # outs = []
+        # x = self.blocks1(x)
+        # outs.append(x)
+        # x = self.blocks2(x)
+        # outs.append(x)
+        # x = self.blocks3(x)
+        # outs.append(x)
+        # return tuple(outs)
+
+        # 1. 逐层运行 patch_embed (分辨率: 1/1 -> 1/2 -> 1/4 -> 1/8 -> 1/16)
+        # patch_embed 包含: [0:Conv, 1:ReLU, 2:Conv, 3:ReLU, 4:Conv, 5:ReLU, 6:Conv]
+        outs = []
+        for i, layer in enumerate(self.patch_embed):
+            x = layer(x)
+            if i == 1:  # 执行完第1次下采样+ReLU
+                feat_1_2 = x  # 1/2 尺度
+            if i == 3:  # 执行完第2次下采样+ReLU
+                feat_1_4 = x  # 1/4 尺度
+            if i == 5:  # 执行完第3次下采样+ReLU
+                feat_1_8 = x  # 1/8 尺度
+
+        # 此时 x 是 1/16 尺度 (patch_embed 运行完毕)
+
+        # 2. 运行后续 Block
+        x = self.blocks1(x)
+        feat_1_16 = x  # 1/16 尺度
+
+        x = self.blocks2(x)
+        feat_1_32 = x  # 1/32 尺度 (包含内部 PatchMerging 的下采样)
+
+        # 为了兼容 Monodepth2 的 5 层结构，我们取到 1/32 为止
+        # 最后的 blocks3 (1/64) 暂时不用，或者如果你想用，就替换掉 1/32
+
+        # 3. 严格按照 [1/2, 1/4, 1/8, 1/16, 1/32] 的顺序放入列表
+        # 这对应 DepthDecoder 中的 input_features[0] 到 [4]
+        return (feat_1_2, feat_1_4, feat_1_8, feat_1_16, feat_1_32)
+
+shvit_s4 = {
+    'img_size': 256,
+    'patch_size': 16,
+    'embed_dim': [224, 336, 448],
+    'depth': [4, 7, 6],
+    'partial_dim': [48, 72, 96],
+    'types': ["i", "s", "s"]
+}
+
+
+# @BACKBONES.register_module()
+def shvit_s4(pretrained=False, frozen_stages=0, distillation=False, fuse=False, pretrained_cfg=None,
+             model_cfg=shvit_s4):
+    model = Partial_ViT_Exp(frozen_stages=frozen_stages, distillation=distillation, pretrained=pretrained, **model_cfg)
+    return model
+
+
+class SHViTEncoder(nn.Module):
+    def __init__(self, model_type="shvit_s1", height=256, width=320):
+        super(SHViTEncoder, self).__init__()
+
+        # 确保 S1 的参数完全匹配下载的权重
+        configs = {
+            'shvit_s1': {
+                # 'img_size': (height, width),
+                'img_size': height,
+                'patch_size': 16,
+                'embed_dim': [128, 224, 320],  # S1 必须是这个通道数
+                'depth': [2, 4, 5],
+                'partial_dim': [32, 48, 68],
+                'types': ["i", "s", "s"]
+            }
+        }
+
+        cfg = configs[model_type]
+        from .shvit import Partial_ViT_Exp
+        self.encoder = Partial_ViT_Exp(**cfg)
+
+        # --- 核心：计算 5 级通道数，与 forward 的输出一一对应 ---
+        e0 = cfg['embed_dim'][0]
+        # 按照 patch_embed 内部的 embed_dim // 8, // 4, // 2 推导
+        self.num_ch_enc = np.array([
+            e0 // 8,  # 1/2 尺度 -> 16
+            e0 // 4,  # 1/4 尺度 -> 32
+            e0 // 2,  # 1/8 尺度 -> 64
+            e0,  # 1/16 尺度 -> 128
+            cfg['embed_dim'][1]  # 1/32 尺度 -> 256
+        ])
+        # 最终 S1 的 num_ch_enc 为 [16, 32, 64, 128, 256]
+        # ----------------------------------------------------
+
+    def load_pretrained(self, weight_path):
+        """
+        显式加载权重函数
+        使用方法: encoder.load_pretrained('/your/path/shvit_s1.pth')
+        """
+        if not os.path.isfile(weight_path):
+            print(f"=> [Error] 找不到权重文件: {weight_path}")
+            return
+
+        print(f"=> 正在显式加载 SHViT 权重: {weight_path}")
+        checkpoint = torch.load(weight_path, map_location="cpu", weights_only=False)
+
+        # 1. 自动定位字典
+        state_dict = checkpoint.get('model', checkpoint.get('state_dict', checkpoint))
+
+        # 2. 清理键名（适配从 mmcv 等框架导出的权重）
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            name = k
+            if name.startswith('module.'): name = name[7:]
+            if name.startswith('backbone.'): name = name[9:]
+
+            # 过滤掉不属于编码器的层（例如分类头）
+            if any(x in name for x in ['head', 'fc', 'classifier']):
+                continue
+            new_state_dict[name] = v
+
+        # 3. 加载
+        msg = self.encoder.load_state_dict(new_state_dict, strict=False)
+        print(f"=> 加载完成！结果报告: {msg}")
+
+    def forward(self, x):
+        x = (x - 0.45) / 0.225
+        return list(self.encoder(x))
 ```
 
 #### 文件: `swiftformer.py`
