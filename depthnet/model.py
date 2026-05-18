@@ -15,7 +15,7 @@ from .networks.swiftformer import SwiftFormer_S
 # from .networks.intrinsics_decoder import IntrinsicsHead
 
 from .networks.shvit import SHViTEncoder
-from .networks.T_A import Trim, Aug
+from .networks.EAFE-M import Trim, Aug
 from .networks.pose_intrinsic_decoder import IntrinsicsHead, PoseDecoder
 
 EPS = 1e-7

@@ -100,11 +100,11 @@ def save_mask_image(mask, h_patches, w_patches, patch_size, path):
 
 def main():
     # ==================== 硬编码配置（按需修改） ====================
-    IMAGE_PATH = r"D:\your_image.jpg"
-    OUTPUT_DIR = r"D:\output"
+    IMAGE_PATH = r"/media/mems509/9b308a11-7150-4494-8f42-71df9385ff43/home/mems509/wjy/MonoLoT-main/data/c3vd_v2/imgs/cecum_t3_a_under_review/0000_color.png"
+    OUTPUT_DIR = r"/media/mems509/9b308a11-7150-4494-8f42-71df9385ff43/home/mems509/wjy/MonoLoT-main/visualize_EAFE-M"
     MASK_RATIO = 0.75
-    DEVICE = "cpu"
-    # 注意：尺寸必须固定为 256x320，因为 T_A.py 的 unpatchify 硬编码了 h=8, w=10
+    DEVICE = "cuda"
+    # 注意：尺寸必须固定为 256x320，因为 EAFE-M.py 的 unpatchify 硬编码了 h=8, w=10
     # ============================================================
 
     HEIGHT = H_PATCHES * P

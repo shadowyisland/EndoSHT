@@ -1,20 +1,7 @@
 from __future__ import absolute_import, division, print_function
 
-import time
-import json
-import datasets.lowcam_dataset as datasets
-import models.encoders as encoders
-import models.decoders as decoders
-import models.endodac as endodac
-from models.endodac import DPTHead
 import numpy as np
-import torch.optim as optim
-import networks
-
-from utils.utils import *
-from utils.layers import *
-from torch.utils.data import DataLoader
-from tensorboardX import SummaryWriter
+import torch
 import random
 
 
