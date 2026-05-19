@@ -19,7 +19,7 @@ EXT_DEPTH = "_depth.tiff"                     # GT 深度文件后缀
 
 def render_depth(disp, gamma=0.6, colormap=cv2.COLORMAP_TURBO):
     disp = (disp - disp.min()) / (disp.max() - disp.min() + 1e-8)
-    disp = np.power(disp, gamma)
+    disp = 1.0 - np.power(disp, gamma)
     disp = (disp * 255).astype(np.uint8)
     return cv2.applyColorMap(disp, colormap)
 
